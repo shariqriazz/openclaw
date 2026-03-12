@@ -403,7 +403,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
 
     if (plan.restartCron) {
       params.onCronRestart?.();
-      state.cronState.cron.stop();
+      await state.cronState.cron.stopGraceful();
       nextState.cronState = buildGatewayCronService({
         cfg: nextConfig,
         deps: params.deps,
