@@ -31,11 +31,13 @@ const hoisted = vi.hoisted(() => {
   const cronInstances: Array<{
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    stopGraceful: ReturnType<typeof vi.fn>;
   }> = [];
 
   class CronServiceMock {
     start = vi.fn(async () => {});
     stop = vi.fn();
+    stopGraceful = vi.fn(async () => {});
     constructor() {
       cronInstances.push(this);
     }
@@ -465,9 +467,19 @@ describe("gateway hot reload", () => {
         expect.objectContaining(nextConfig),
       );
 
-      expect(hoisted.cronInstances.length).toBe(2);
-      expect(hoisted.cronInstances[0].stop).toHaveBeenCalledTimes(1);
-      expect(hoisted.cronInstances[1].start).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(hoisted.cronInstances.length).toBe(2);
+      });
+      expect(hoisted.cronInstances[0].stopGraceful).toHaveBeenCalledTimes(1);
+      const restartedCron = hoisted.cronInstances.at(-1);
+      if (!restartedCron) {
+        throw new Error("expected cron restart to create a cron service");
+      }
+      await vi.waitFor(() => {
+        expect(restartedCron.start).toHaveBeenCalledTimes(1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(restartedCron.start).toHaveBeenCalledTimes(1);
 
       expect(hoisted.providerManager.stopChannel).toHaveBeenCalledTimes(5);
       expect(hoisted.providerManager.startChannel).toHaveBeenCalledTimes(5);
