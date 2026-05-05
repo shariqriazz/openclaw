@@ -705,6 +705,9 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
 
 /** Arms the cron timer for the next wake or a maintenance recheck. */
 export function armTimer(state: CronServiceState) {
+  if (state.stopping) {
+    return;
+  }
   if (state.timer) {
     clearTimeout(state.timer);
   }
@@ -763,6 +766,9 @@ export function armTimer(state: CronServiceState) {
 }
 
 function armRunningRecheckTimer(state: CronServiceState) {
+  if (state.stopping) {
+    return;
+  }
   if (state.timer) {
     clearTimeout(state.timer);
   }
@@ -775,6 +781,9 @@ function armRunningRecheckTimer(state: CronServiceState) {
 
 /** Handles one cron timer tick: load due jobs, reserve them, execute, persist, and re-arm. */
 export async function onTimer(state: CronServiceState) {
+  if (state.stopping) {
+    return;
+  }
   if (state.running) {
     // Re-arm the timer so the scheduler keeps ticking even when a job is
     // still executing.  Without this, a long-running job (e.g. an agentTurn
@@ -789,6 +798,22 @@ export async function onTimer(state: CronServiceState) {
     armRunningRecheckTimer(state);
     return;
   }
+  // Track the tick body so `stopGraceful` can wait for the worker phase
+  // (outside the `locked()` queue) and the post-worker phase-3 persist
+  // to complete before the replacement service loads from disk.  The
+  // add happens synchronously between `runTimerTickBody(state)` starting
+  // and the first `await` inside it, so it is visible to any later
+  // `stopGraceful` snapshot.
+  const tickPromise = runTimerTickBody(state);
+  state.inFlightRuns.add(tickPromise);
+  try {
+    await tickPromise;
+  } finally {
+    state.inFlightRuns.delete(tickPromise);
+  }
+}
+
+async function runTimerTickBody(state: CronServiceState) {
   state.running = true;
   // Keep a watchdog timer armed while a tick is executing. If execution hangs
   // (for example in a provider call), the scheduler still wakes to re-check.
