@@ -29,6 +29,7 @@ function createMockState(jobs: CronJob[]): CronServiceState {
     store,
     timer: null,
     running: false,
+    stopping: false,
   } as unknown as CronServiceState;
 }
 

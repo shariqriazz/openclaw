@@ -237,6 +237,7 @@ export function createMockCronStateForJobs(params: {
     restartRecoveryPending: false,
     activeManualRunJobIds: new Set<string>(),
     manualSetupTimeoutRestartNotified: false,
+    stopping: false,
     timer: null,
     storeLoadedAtMs: nowMs,
     op: Promise.resolve(),
@@ -244,6 +245,8 @@ export function createMockCronStateForJobs(params: {
     warnedInvalidPersistedJobKeys: new Set<string>(),
     pendingQuarantineConfigJobs: [],
     lastQuarantineFailureWarnKey: null,
+    storeFileMtimeMs: null,
+    inFlightRuns: new Set(),
     deps: {
       storePath: "/mock/path",
       cronEnabled: true,

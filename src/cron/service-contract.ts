@@ -23,6 +23,7 @@ export type CronServiceRunResult = CronRunResult;
 export interface CronServiceContract {
   start(): Promise<void>;
   stop(): void;
+  stopGraceful(): Promise<void>;
   status(): Promise<CronStatusSummary>;
   list(opts?: { includeDisabled?: boolean }): Promise<CronListResult>;
   listPage(opts?: CronListPageOptions): Promise<CronListPageResult>;
