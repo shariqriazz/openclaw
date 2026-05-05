@@ -2,8 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { clearCommandLane, setCommandLaneConcurrency } from "../process/command-queue.js";
+import { CommandLane } from "../process/lanes.js";
 import { CronService } from "./service.js";
-import { writeCronStoreSnapshot } from "./service.test-harness.js";
+import { createDeferred, writeCronStoreSnapshot } from "./service.test-harness.js";
+import { locked } from "./service/locked.js";
+import { stopGraceful as stopGracefulOp } from "./service/ops.js";
+import { createCronServiceState } from "./service/state.js";
+import { armTimer, onTimer } from "./service/timer.js";
 import { loadCronStore } from "./store.js";
 import type { CronJob } from "./types.js";
 
@@ -124,6 +130,267 @@ describe("CronService.stopGraceful", () => {
     // Create service but do NOT call start() — store is null
     const cron = makeCronService(store.storePath);
     await expect(cron.stopGraceful()).resolves.toBeUndefined();
+
+    await store.cleanup();
+  });
+
+  it("waits for an in-flight locked() operation before returning", async () => {
+    const store = await makeStorePath();
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [makeFutureJob("inflight-job")],
+    });
+
+    const state = createCronServiceState({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+    state.store = { version: 1, jobs: [makeFutureJob("inflight-job")] };
+
+    // Hold the locked() chain open with a deferred.  This simulates an
+    // in-flight timer tick or API mutation that hasn't finished persisting
+    // at the moment hot reload begins.
+    const release = createDeferred<void>();
+    let lockedOpResolved = false;
+    const lockedOp = locked(state, async () => {
+      await release.promise;
+      lockedOpResolved = true;
+    });
+
+    // Yield one microtask so the locked op is actually running (not just queued).
+    await Promise.resolve();
+
+    // Start stopGraceful while the lock is held.
+    let stopGracefulResolved = false;
+    const stopPromise = stopGracefulOp(state).then(() => {
+      stopGracefulResolved = true;
+    });
+
+    // Give the event loop a few turns to prove stopGraceful is blocked.
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+    }
+    expect(lockedOpResolved).toBe(false);
+    expect(stopGracefulResolved).toBe(false);
+
+    // Release the in-flight op.  stopGraceful must only resolve after.
+    release.resolve();
+    await lockedOp;
+    expect(lockedOpResolved).toBe(true);
+    await stopPromise;
+    expect(stopGracefulResolved).toBe(true);
+
+    await store.cleanup();
+  });
+
+  it("drains in-flight enqueueRun manual runs before returning", async () => {
+    // Isolate from any lane state leaked by prior tests in this process.
+    clearCommandLane(CommandLane.Cron);
+    setCommandLaneConcurrency(CommandLane.Cron, 1);
+
+    const store = await makeStorePath();
+    // Seed a job with a FUTURE nextRunAtMs so startup catch-up does not
+    // pick it up; we'll trigger it manually via enqueueRun("force").
+    const seedJob = makeFutureJob("manual-run-job");
+    seedJob.state.nextRunAtMs = Date.now() + 3600_000;
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [seedJob],
+    });
+
+    // Deferred runIsolatedAgentJob — the manual run pauses here, inside
+    // executeJobCoreWithTimeout, which runs OUTSIDE the locked() queue.
+    // stopGraceful must wait for this to resolve, then for the subsequent
+    // finishPreparedManualRun persist, before returning.
+    const agentJobRelease = createDeferred<{ status: "ok" }>();
+    const runIsolatedAgentJob = vi.fn(async () => {
+      return await agentJobRelease.promise;
+    });
+
+    const cron = new CronService({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: runIsolatedAgentJob as never,
+    });
+    await cron.start();
+
+    // Dispatch a manual run on CommandLane.Cron.  It will block inside
+    // executeJobCoreWithTimeout on agentJobRelease.
+    const enqueueResult = await cron.enqueueRun("manual-run-job", "force");
+    expect(enqueueResult.ok).toBe(true);
+
+    // Wait until the isolated job runner has actually been invoked — this
+    // confirms the manual run has passed the prepare-phase locked() block
+    // and is now running outside the lock, which is the scenario the
+    // original PR's drain did NOT cover.
+    for (let i = 0; i < 100 && runIsolatedAgentJob.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(runIsolatedAgentJob).toHaveBeenCalled();
+
+    // stopGraceful must now block until we release the manual run.
+    let stopResolved = false;
+    const stopPromise = cron.stopGraceful().then(() => {
+      stopResolved = true;
+    });
+
+    // Prove blocked: wait a short real-time window while the deferred is
+    // unresolved, stopGraceful must not have returned.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stopResolved).toBe(false);
+
+    // Release the isolated job runner — manual run completes,
+    // finishPreparedManualRun persists, stopGraceful resolves.
+    agentJobRelease.resolve({ status: "ok" });
+    await stopPromise;
+    expect(stopResolved).toBe(true);
+
+    // On-disk state must reflect the completed manual run: nextRunAtMs
+    // recomputed for the next schedule, runningAtMs cleared.
+    const diskStore = await loadCronStore(store.storePath);
+    const diskJob = diskStore.jobs.find((j) => j.id === "manual-run-job");
+    expect(diskJob).toBeDefined();
+    expect(diskJob?.state.runningAtMs).toBeUndefined();
+    expect(diskJob?.state.lastRunAtMs).toBeDefined();
+
+    await store.cleanup();
+  });
+
+  it("drains an in-flight timer tick's worker + phase-3 persist", async () => {
+    const store = await makeStorePath();
+    const seedJob = makeFutureJob("timer-tick-job");
+    // Set nextRunAtMs in the past so collectRunnableJobs picks it up.
+    seedJob.state.nextRunAtMs = Date.now() - 1_000;
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [seedJob],
+    });
+
+    // Deferred runner — the timer tick's worker phase (outside locked())
+    // pauses here until we resolve.  If stopGraceful were to return
+    // before the tick resolves, the tick's phase-3 persist would write
+    // to disk *after* the replacement service loaded — the exact race
+    // the reviewer flagged.
+    const agentJobRelease = createDeferred<{ status: "ok" }>();
+    const runIsolatedAgentJob = vi.fn(async () => {
+      return await agentJobRelease.promise;
+    });
+
+    const state = createCronServiceState({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: runIsolatedAgentJob as never,
+    });
+    // Load store so onTimer can observe the seeded job.
+    state.store = {
+      version: 1,
+      jobs: [{ ...seedJob, state: { ...seedJob.state } }],
+    };
+
+    // Kick the tick manually (do not await — onTimer is fire-and-forget
+    // from setTimeout in production).
+    void onTimer(state);
+
+    // Wait until the worker phase has been entered — at that point the
+    // tick is past the phase-1 locked() block and suspended outside
+    // the lock, which is the race window.
+    for (let i = 0; i < 100 && runIsolatedAgentJob.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(runIsolatedAgentJob).toHaveBeenCalled();
+
+    // stopGraceful must wait for the tick to finish its worker phase
+    // AND its phase-3 persist, even though the tick's locked() blocks
+    // are not currently held at this moment.
+    let stopResolved = false;
+    const stopPromise = stopGracefulOp(state).then(() => {
+      stopResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stopResolved).toBe(false);
+
+    // Release the worker — tick completes phase-3 persist, stopGraceful
+    // resolves only after that persist lands.
+    agentJobRelease.resolve({ status: "ok" });
+    await stopPromise;
+    expect(stopResolved).toBe(true);
+
+    // On-disk state must reflect the completed tick run.
+    const diskStore = await loadCronStore(store.storePath);
+    const diskJob = diskStore.jobs.find((j) => j.id === "timer-tick-job");
+    expect(diskJob).toBeDefined();
+    expect(diskJob?.state.runningAtMs).toBeUndefined();
+    expect(diskJob?.state.lastRunAtMs).toBeDefined();
+
+    await store.cleanup();
+  });
+
+  it("rejects new enqueueRun after stopGraceful begins", async () => {
+    clearCommandLane(CommandLane.Cron);
+    setCommandLaneConcurrency(CommandLane.Cron, 1);
+
+    const store = await makeStorePath();
+    const seedJob = makeFutureJob("reject-after-stop");
+    seedJob.state.nextRunAtMs = Date.now() + 3600_000;
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [seedJob],
+    });
+
+    const cron = makeCronService(store.storePath);
+    await cron.start();
+    await cron.stopGraceful();
+
+    const result = await cron.enqueueRun("reject-after-stop", "force");
+    expect(result.ok).toBe(false);
+
+    await store.cleanup();
+  });
+
+  it("stopping flag prevents armTimer from re-arming after stopGraceful", async () => {
+    const store = await makeStorePath();
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [makeFutureJob("rearm-guard-job")],
+    });
+
+    const state = createCronServiceState({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeatNow: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    const futureMs = Date.now() + 60_000;
+    const job = makeFutureJob("rearm-guard-job");
+    job.state.nextRunAtMs = futureMs;
+    state.store = { version: 1, jobs: [job] };
+
+    // Before stopping, armTimer should arm the timer
+    armTimer(state);
+    expect(state.timer).not.toBeNull();
+
+    // Set the stopping flag (as stopGraceful would)
+    state.stopping = true;
+    clearTimeout(state.timer!);
+    state.timer = null;
+
+    // armTimer should now refuse to re-arm
+    armTimer(state);
+    expect(state.timer).toBeNull();
 
     await store.cleanup();
   });

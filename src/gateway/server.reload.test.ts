@@ -31,11 +31,13 @@ const hoisted = vi.hoisted(() => {
   const cronInstances: Array<{
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    stopGraceful: ReturnType<typeof vi.fn>;
   }> = [];
 
   class CronServiceMock {
     start = vi.fn(async () => {});
     stop = vi.fn();
+    stopGraceful = vi.fn(async () => {});
     constructor() {
       cronInstances.push(this);
     }
@@ -466,7 +468,7 @@ describe("gateway hot reload", () => {
       );
 
       expect(hoisted.cronInstances.length).toBe(2);
-      expect(hoisted.cronInstances[0].stop).toHaveBeenCalledTimes(1);
+      expect(hoisted.cronInstances[0].stopGraceful).toHaveBeenCalledTimes(1);
       expect(hoisted.cronInstances[1].start).toHaveBeenCalledTimes(1);
 
       expect(hoisted.providerManager.stopChannel).toHaveBeenCalledTimes(5);
