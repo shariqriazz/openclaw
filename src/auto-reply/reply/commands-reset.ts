@@ -156,7 +156,7 @@ export async function maybeHandleResetCommand(
 
   const targetSessionEntry = params.sessionStore?.[params.sessionKey] ?? params.sessionEntry;
 
-  const hookResult = await emitResetCommandHooks({
+  await emitResetCommandHooks({
     action: commandAction,
     ctx: params.ctx,
     cfg: params.cfg,
@@ -166,17 +166,10 @@ export async function maybeHandleResetCommand(
     previousSessionEntry: params.previousSessionEntry,
     workspaceDir: params.workspaceDir,
   });
-  if (!resetTail) {
-    return {
-      shouldContinue: false,
-      ...(hookResult.routedReply
-        ? {}
-        : {
-            reply: {
-              text: commandAction === "reset" ? "✅ Session reset." : "✅ New session started.",
-            },
-          }),
-    };
-  }
+  // Fork patch (shariq): revert upstream a68ca1ae0b "acknowledge bare reset commands"
+  // so bare /new and /reset fall through to a model turn (v2026.4.24 behavior).
+  // With LCM as context engine, the post-reset turn can query summarized history
+  // and call `pipeline memory store` per AGENTS.md memoryFlush instructions,
+  // restoring auto memory flush on /new.
   return null;
 }
