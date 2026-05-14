@@ -1,5 +1,10 @@
 import { vi, type Mock } from "vitest";
 import { resolveFastModeState as resolveFastModeStateImpl } from "../../agents/fast-mode.js";
+import {
+  AGENT_LANE_NESTED,
+  resolveNestedAgentLane as resolveNestedAgentLaneImpl,
+  resolveNestedAgentLaneForSession as resolveNestedAgentLaneForSessionImpl,
+} from "../../agents/lanes.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
@@ -74,6 +79,7 @@ export const retireSessionMcpRuntimeMock = createMock();
 const resolveBootstrapWarningSignaturesSeenMock = createMock();
 const resolveCronStyleNowMock = createMock();
 const resolveNestedAgentLaneMock = createMock();
+const resolveNestedAgentLaneForSessionMock = createMock();
 const resolveAgentTimeoutMsMock = createMock();
 const deriveSessionTotalTokensMock = createMock();
 const hasNonzeroUsageMock = createMock();
@@ -183,8 +189,10 @@ vi.mock("./run-auth-profile.runtime.js", () => ({
 }));
 
 vi.mock("./run-embedded.runtime.js", () => ({
+  AGENT_LANE_NESTED,
   resolveFastModeState: resolveFastModeStateMock,
   resolveNestedAgentLane: resolveNestedAgentLaneMock,
+  resolveNestedAgentLaneForSession: resolveNestedAgentLaneForSessionMock,
   runEmbeddedPiAgent: runEmbeddedPiAgentMock,
 }));
 
@@ -339,7 +347,12 @@ function resetRunExecutionMocks(): void {
   isCliProviderMock.mockReturnValue(false);
   resolveBootstrapWarningSignaturesSeenMock.mockReturnValue(new Set());
   resolveFastModeStateMock.mockImplementation((params) => resolveFastModeStateImpl(params));
-  resolveNestedAgentLaneMock.mockReturnValue(undefined);
+  resolveNestedAgentLaneMock.mockImplementation((lane: string | undefined) =>
+    resolveNestedAgentLaneImpl(lane),
+  );
+  resolveNestedAgentLaneForSessionMock.mockImplementation((sessionKey: string | undefined) =>
+    resolveNestedAgentLaneForSessionImpl(sessionKey),
+  );
   normalizeVerboseLevelMock.mockImplementation((value: unknown) => value ?? "off");
   resolveSessionTranscriptPathMock.mockReturnValue("/tmp/transcript.jsonl");
   registerAgentRunContextMock.mockReturnValue(undefined);

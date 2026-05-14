@@ -151,13 +151,19 @@ export function createCronPromptExecutor(params: {
           );
           return result;
         }
-        const { resolveFastModeState, resolveNestedAgentLane, runEmbeddedPiAgent } =
-          await loadCronEmbeddedRuntime();
+        const {
+          AGENT_LANE_NESTED,
+          resolveFastModeState,
+          resolveNestedAgentLane,
+          resolveNestedAgentLaneForSession,
+          runEmbeddedPiAgent,
+        } = await loadCronEmbeddedRuntime();
         const currentChannelId = await resolveCurrentChannelTarget({
           channel: params.messageChannel,
           to: params.resolvedDelivery.to,
           threadId: params.resolvedDelivery.threadId,
         });
+        const resolvedLane = resolveNestedAgentLane(params.lane);
         const result = await runEmbeddedPiAgent({
           sessionId: params.cronSession.sessionEntry.sessionId,
           sessionKey: params.agentSessionKey,
@@ -177,7 +183,10 @@ export function createCronPromptExecutor(params: {
           config: params.cfgWithAgentDefaults,
           skillsSnapshot: params.skillsSnapshot,
           prompt: promptText,
-          lane: resolveNestedAgentLane(params.lane),
+          lane:
+            resolvedLane === AGENT_LANE_NESTED
+              ? resolveNestedAgentLaneForSession(params.agentSessionKey)
+              : resolvedLane,
           provider: providerOverride,
           model: modelOverride,
           authProfileId: params.liveSelection.authProfileId,
