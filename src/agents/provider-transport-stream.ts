@@ -142,6 +142,14 @@ export function createBoundaryAwareStreamFnForModel(
 ): StreamFn | undefined {
   // Default embedded-runner fallback. Keep OpenAI-family APIs here while native
   // HTTP streams preserve the same OpenClaw request contract.
+  if (model.api === "openai-chatgpt-responses") {
+    // ChatGPT/Codex OAuth has a provider-owned transport implementation that
+    // speaks chatgpt.com/backend-api/codex directly. Do not route the default
+    // OpenClaw/Pi harness through the generic OpenAI SDK transport: that path
+    // expects api.openai.com-style responses and fails against ChatGPT with
+    // invalid_provider_content_type before the model can reply.
+    return undefined;
+  }
   if (!isTransportAwareApiSupported(model.api)) {
     return undefined;
   }
