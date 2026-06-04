@@ -73,6 +73,7 @@ import {
 import { shouldDowngradeDeliveryToSessionOnly } from "../../infra/outbound/best-effort-delivery.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
 import { isAbortError } from "../../infra/unhandled-rejections.js";
+import { buildBareSessionResetPrompt } from "../../auto-reply/reply/session-reset-prompt.js";
 import {
   loadVoiceWakeRoutingConfig,
   resolveVoiceWakeRouteByTrigger,
@@ -1512,6 +1513,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       let resolvedSessionAgentId: string | undefined;
       let isNewSession = false;
       let skipAgentInitialSessionTouch = false;
+      let skipTimestampInjection = false;
 
       const resetCommandMatch = message.match(RESET_COMMAND_RE);
       if (resetCommandMatch && requestedSessionKey) {
@@ -1540,52 +1542,12 @@ export const agentHandlers: GatewayRequestHandlers = {
         if (postResetMessage) {
           message = postResetMessage;
         } else {
-          let resetAckResult: Awaited<ReturnType<typeof resolveBareSessionResetResult>>;
-          try {
-            const deliverySession =
-              request.deliver === true
-                ? loadBareSessionResetDeliverySession({
-                    cfg,
-                    sessionKey: resetResult.key,
-                    ...(agentId ? { agentId } : {}),
-                  })
-                : undefined;
-            resetAckResult = await resolveBareSessionResetResult({
-              cfg: deliverySession?.cfg ?? cfg,
-              context,
-              reason: resetReason,
-              sessionId: resetResult.sessionId,
-              sessionKey: resetResult.key,
-              agentId: deliverySession?.agentId ?? agentId,
-              sessionEntry: deliverySession?.entry,
-              request,
-              runId,
-            });
-          } catch (err) {
-            respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
-            return;
-          }
-          const responsePayload = buildBareSessionResetResponse({
-            runId,
-            result: resetAckResult,
-          });
-          agentRunAccepted = true;
-          setGatewayDedupeEntries({
-            dedupe: context.dedupe,
-            keys: agentDedupeKeys,
-            entry: {
-              ts: Date.now(),
-              ok: true,
-              payload: responsePayload,
-            },
-          });
-          respond(true, responsePayload, undefined, { runId });
-          emitSessionsChanged(context, {
-            sessionKey: resetResult.key,
-            ...(resetResult.key === "global" && agentId ? { agentId } : {}),
-            reason: resetReason,
-          });
-          return;
+          // Shariq's OpenClaw setup relies on bare /new and /reset starting a
+          // fresh model turn so the agent executes Session Startup and recalls
+          // pipeline memory from AGENTS.md/MEMORY.md. Upstream v2026.6.x changed
+          // bare resets to ACK-only; keep the current production behavior.
+          message = buildBareSessionResetPrompt(cfg);
+          skipTimestampInjection = true;
         }
       }
 
@@ -1593,7 +1555,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       // Channel messages (Discord, Telegram, etc.) get timestamps via envelope
       // formatting in a separate code path — they never reach this handler.
       // See: https://github.com/openclaw/openclaw/issues/3658
-      if (!isRawModelRun && inputProvenance?.kind !== "inter_session") {
+      if (!skipTimestampInjection && !isRawModelRun && inputProvenance?.kind !== "inter_session") {
         message = injectTimestamp(message, timestampOptsFromConfig(cfg));
       }
 

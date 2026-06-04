@@ -56,6 +56,18 @@
             "cost": { "input": 1.75, "output": 14, "cacheRead": 0.175, "cacheWrite": 0 }
           },
           {
+            "id": "gpt-5.3-codex-spark",
+            "name": "GPT-5.3 Codex Spark",
+            "api": "openai-chatgpt-responses",
+            "baseUrl": "https://chatgpt.com/backend-api",
+            "reasoning": true,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "contextTokens": 100000,
+            "maxTokens": 32000,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+          },
+          {
             "id": "gpt-5.4",
             "name": "GPT-5.4",
             "reasoning": true,
@@ -211,19 +223,7 @@
     },
     "discovery": {
       "openai": "static"
-    },
-    "suppressions": [
-      {
-        "provider": "openai",
-        "model": "gpt-5.3-codex-spark",
-        "reason": "gpt-5.3-codex-spark is not exposed by the OpenAI API catalog. Use openai/gpt-5.5."
-      },
-      {
-        "provider": "azure-openai-responses",
-        "model": "gpt-5.3-codex-spark",
-        "reason": "gpt-5.3-codex-spark is not exposed by the OpenAI API catalog. Use openai/gpt-5.5."
-      }
-    ]
+    }
   },
   "setup": {
     "providers": [
