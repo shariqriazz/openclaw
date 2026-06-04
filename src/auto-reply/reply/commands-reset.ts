@@ -9,16 +9,21 @@ import { emitResetCommandHooks, type ResetCommandAction } from "./commands-reset
 import { parseSoftResetCommand } from "./commands-reset-mode.js";
 import type { CommandHandlerResult, HandleCommandsParams } from "./commands-types.js";
 import { isResetAuthorizedForContext } from "./reset-authorization.js";
+import { buildBareSessionResetPrompt } from "./session-reset-prompt.js";
 
 function applyAcpResetTailContext(ctx: HandleCommandsParams["ctx"], resetTail: string): void {
+  applyResetModelPromptContext(ctx, resetTail);
+  (ctx as Record<string, unknown>).AcpDispatchTailAfterReset = true;
+}
+
+function applyResetModelPromptContext(ctx: HandleCommandsParams["ctx"], prompt: string): void {
   const mutableCtx = ctx as Record<string, unknown>;
-  mutableCtx.Body = resetTail;
-  mutableCtx.RawBody = resetTail;
-  mutableCtx.CommandBody = resetTail;
-  mutableCtx.BodyForCommands = resetTail;
-  mutableCtx.BodyForAgent = resetTail;
-  mutableCtx.BodyStripped = resetTail;
-  mutableCtx.AcpDispatchTailAfterReset = true;
+  mutableCtx.Body = prompt;
+  mutableCtx.RawBody = prompt;
+  mutableCtx.CommandBody = prompt;
+  mutableCtx.BodyForCommands = prompt;
+  mutableCtx.BodyForAgent = prompt;
+  mutableCtx.BodyStripped = prompt;
 }
 
 function isResetAuthorized(params: HandleCommandsParams): boolean {
@@ -168,13 +173,26 @@ export async function maybeHandleResetCommand(
     workspaceDir: params.workspaceDir,
   });
   if (!resetTail) {
+    if (hookResult.routedReply) {
+      return { shouldContinue: false };
+    }
+    if (commandAction === "new") {
+      const startupPrompt = buildBareSessionResetPrompt(params.cfg);
+      applyResetModelPromptContext(params.ctx, startupPrompt);
+      if (params.rootCtx && params.rootCtx !== params.ctx) {
+        applyResetModelPromptContext(params.rootCtx, startupPrompt);
+      }
+      params.command.commandBodyNormalized = startupPrompt;
+      params.command.rawBodyNormalized = startupPrompt;
+      return { shouldContinue: true };
+    }
     return {
       shouldContinue: false,
       ...(hookResult.routedReply
         ? {}
         : {
             reply: {
-              text: commandAction === "reset" ? "✅ Session reset." : "✅ New session started.",
+              text: "✅ Session reset.",
             },
           }),
     };
