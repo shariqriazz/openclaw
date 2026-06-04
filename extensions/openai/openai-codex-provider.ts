@@ -503,15 +503,10 @@ export function buildOpenAICodexProviderPlugin(): ProviderPlugin {
       ],
     }),
     isModernModelRef: ({ modelId }) => matchesExactOrPrefix(modelId, OPENAI_CODEX_MODERN_MODEL_IDS),
-    suppressBuiltInModel: ({ provider, modelId }) =>
-      normalizeProviderId(provider) === PROVIDER_ID &&
-      normalizeLowercaseStringOrEmpty(modelId) === "gpt-5.3-codex-spark"
-        ? {
-            suppress: true,
-            errorMessage:
-              "gpt-5.3-codex-spark is no longer exposed by the OpenAI or Codex catalogs. Use openai/gpt-5.5.",
-          }
-        : undefined,
+    // Keep Spark available for accounts/catalogs that still expose it. Older
+    // OpenClaw builds suppressed this slug as stale, but some Codex OAuth
+    // accounts can still use it through coding-agent runtimes.
+    suppressBuiltInModel: () => undefined,
     preferRuntimeResolvedModel: (ctx) => {
       if (normalizeProviderId(ctx.provider) !== PROVIDER_ID) {
         return false;
