@@ -54,6 +54,7 @@ import {
   resolveIngressWorkspaceOverrideForSpawnedRun,
 } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
+import { buildBareSessionResetPrompt } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommandFromIngress } from "../../commands/agent.js";
 import {
   evaluateSessionFreshness,
@@ -1749,56 +1750,11 @@ export const agentHandlers: GatewayRequestHandlers = {
           }
           message = postResetMessage;
         } else {
-          let resetAckResult: Awaited<ReturnType<typeof resolveBareSessionResetResult>>;
-          try {
-            const deliverySession =
-              request.deliver === true
-                ? loadBareSessionResetDeliverySession({
-                    cfg,
-                    sessionKey: resetResult.key,
-                    ...(agentId ? { agentId } : {}),
-                  })
-                : undefined;
-            resetAckResult = await resolveBareSessionResetResult({
-              cfg: deliverySession?.cfg ?? cfg,
-              context,
-              reason: resetReason,
-              sessionId: resetResult.sessionId,
-              sessionKey: resetResult.key,
-              agentId: deliverySession?.agentId ?? agentId,
-              sessionEntry: deliverySession?.entry,
-              request: sessionKeyFromTo ? { ...request, to: undefined } : request,
-              runId,
-              assertCurrent: () => assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration),
-            });
-          } catch (err) {
-            if (abortForLifecycleRotation({ sessionKey: resetResult.key, agentId })) {
-              return;
-            }
-            respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
-            return;
-          }
-          const responsePayload = buildBareSessionResetResponse({
-            runId,
-            result: resetAckResult,
-          });
-          agentRunAccepted = true;
-          setGatewayDedupeEntries({
-            dedupe: context.dedupe,
-            keys: agentDedupeKeys,
-            entry: {
-              ts: Date.now(),
-              ok: true,
-              payload: responsePayload,
-            },
-          });
-          respond(true, responsePayload, undefined, { runId });
-          emitSessionsChanged(context, {
-            sessionKey: resetResult.key,
-            ...(resetResult.key === "global" && agentId ? { agentId } : {}),
-            reason: resetReason,
-          });
-          return;
+          // Shariq's OpenClaw setup relies on bare /new and /reset starting a
+          // fresh model turn so the agent executes Session Startup and recalls
+          // pipeline memory from AGENTS.md/MEMORY.md. Upstream v2026.6.x changed
+          // bare resets to ACK-only; keep the current production behavior.
+          message = buildBareSessionResetPrompt(cfg);
         }
       }
 
