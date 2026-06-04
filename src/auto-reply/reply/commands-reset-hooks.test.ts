@@ -487,7 +487,7 @@ describe("handleCommands reset hooks", () => {
     expectObjectFields(firstHookEvent(), { type: "command", action: "reset" }, "hook event");
   });
 
-  it("acknowledges bare /new without falling through to model execution", async () => {
+  it("continues bare /new into a startup model turn", async () => {
     const params = buildResetParams("/NEW", {
       commands: { text: true },
       channels: { whatsapp: { allowFrom: ["*"] } },
@@ -495,10 +495,13 @@ describe("handleCommands reset hooks", () => {
 
     const result = await maybeHandleResetCommand(params);
 
-    expect(result).toEqual({
-      shouldContinue: false,
-      reply: { text: "✅ New session started." },
-    });
+    expect(result).toEqual({ shouldContinue: true });
+    expect(params.command.commandBodyNormalized).toContain(
+      "A new session was started via /new or /reset.",
+    );
+    expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toBe(
+      params.command.commandBodyNormalized,
+    );
     expectObjectFields(firstHookEvent(), { type: "command", action: "new" }, "hook event");
   });
 
