@@ -224,6 +224,7 @@ describe("streamOpenAICodexResponses transport", () => {
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toBe("stop after payload");
     expect(capturedPayload?.store).toBe(false);
+    expect(capturedPayload).toMatchObject({ include: ["reasoning.encrypted_content"] });
     const reasoningItem = capturedPayload?.input?.find((item) => item.type === "reasoning");
     expect(reasoningItem).toBeUndefined();
     const messageItem = capturedPayload?.input?.find((item) => item.type === "message");
@@ -238,6 +239,80 @@ describe("streamOpenAICodexResponses transport", () => {
       call_id: "call_abc",
     });
     expect(functionCall).not.toHaveProperty("id");
+  });
+
+  it("keeps ChatGPT tool payload non-strict while applying model compat schema normalization", async () => {
+    let capturedPayload:
+      | {
+          tools?: Array<Record<string, unknown>>;
+        }
+      | undefined;
+    const compatModel = {
+      ...model,
+      compat: {
+        unsupportedToolSchemaKeywords: ["not"],
+        omitEmptyArrayItems: true,
+      },
+    } satisfies Model<"openai-chatgpt-responses">;
+
+    const stream = streamOpenAICodexResponses(
+      compatModel,
+      {
+        messages: [{ role: "user", content: "use a tool", timestamp: 1 }],
+        tools: [
+          {
+            name: "lookup",
+            description: "Look up an item.",
+            parameters: {
+              type: "object",
+              properties: {
+                query: {
+                  type: "string",
+                  not: { const: "forbidden" },
+                },
+                tags: {
+                  type: "array",
+                  items: {},
+                },
+              },
+            },
+          },
+        ],
+      },
+      {
+        apiKey: createJwt({
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acct-1",
+          },
+        }),
+        transport: "sse",
+        onPayload: (payload) => {
+          capturedPayload = payload as typeof capturedPayload;
+          throw new Error("stop after payload");
+        },
+      },
+    );
+
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toBe("stop after payload");
+    expect(capturedPayload?.tools).toHaveLength(1);
+    const [tool] = capturedPayload?.tools ?? [];
+    expect(tool).not.toHaveProperty("strict");
+    const parameters = tool?.parameters as Record<string, unknown> | undefined;
+    expect(parameters).toMatchObject({
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        tags: { type: "array" },
+      },
+    });
+    const properties = parameters?.properties as
+      | Record<string, Record<string, unknown>>
+      | undefined;
+    expect(properties?.query).not.toHaveProperty("not");
+    expect(properties?.tags).not.toHaveProperty("items");
   });
 
   it("caps oversized timeoutMs before creating request abort signals", async () => {

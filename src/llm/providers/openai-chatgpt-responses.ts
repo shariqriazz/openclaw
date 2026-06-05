@@ -509,7 +509,7 @@ function buildRequestBody(
   }
 
   if (context.tools && context.tools.length > 0) {
-    body.tools = convertResponsesTools(context.tools, { strict: null });
+    body.tools = convertResponsesTools(context.tools, { model, strict: null });
   }
 
   if (options?.reasoningEffort !== undefined) {
