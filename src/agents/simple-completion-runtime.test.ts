@@ -471,6 +471,85 @@ describe("prepareSimpleCompletionModel", () => {
     expect(result.auth.apiKey).toBe("bedrock-runtime-token");
   });
 
+  it("keeps ChatGPT OAuth simple completions on the native responses API with resolved auth", async () => {
+    const codexModel: Model<"openai-chatgpt-responses"> = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    };
+    hoisted.resolveModelMock.mockReturnValueOnce({
+      model: codexModel,
+      authStorage: {
+        setRuntimeApiKey: hoisted.setRuntimeApiKeyMock,
+      },
+      modelRegistry: {},
+    });
+    hoisted.getApiKeyForModelMock.mockResolvedValueOnce({
+      apiKey: "oauth-profile-token",
+      source: "auth-profile",
+      mode: "oauth",
+      profileId: "openai-profile",
+    });
+    hoisted.prepareProviderRuntimeAuthMock.mockResolvedValueOnce({
+      apiKey: "resolved-oauth-token",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+
+    const prepared = await prepareSimpleCompletionModel({
+      cfg: undefined,
+      provider: "openai",
+      modelId: "gpt-5.5",
+      agentDir: "/tmp/openclaw-agent",
+    });
+    expectPreparedModelResult(prepared);
+
+    await completeWithPreparedSimpleCompletionModel({
+      model: prepared.model,
+      auth: prepared.auth,
+      context: { prompt: "Reply OK" } as never,
+    });
+
+    expect(hoisted.prepareProviderRuntimeAuthMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        workspaceDir: "/tmp/openclaw-agent",
+        context: expect.objectContaining({
+          apiKey: "oauth-profile-token",
+          authMode: "oauth",
+          modelId: "gpt-5.5",
+          profileId: "openai-profile",
+        }),
+      }),
+    );
+    expect(hoisted.setRuntimeApiKeyMock).toHaveBeenCalledWith("openai", "resolved-oauth-token");
+    expect(hoisted.prepareModelForSimpleCompletionMock).toHaveBeenCalledWith({
+      model: expect.objectContaining({
+        provider: "openai",
+        id: "gpt-5.5",
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      }),
+      cfg: undefined,
+    });
+    expect(hoisted.completeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        id: "gpt-5.5",
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      }),
+      { prompt: "Reply OK" },
+      expect.objectContaining({ apiKey: "resolved-oauth-token" }),
+    );
+  });
+
   it("can skip agent model/auth discovery for config-scoped one-shot completions", async () => {
     hoisted.resolveModelAsyncMock.mockResolvedValueOnce({
       model: {

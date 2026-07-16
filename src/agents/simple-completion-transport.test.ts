@@ -337,58 +337,26 @@ describe("prepareModelForSimpleCompletion", () => {
     expect(result).toBe(transportModel);
   });
 
-  it.each([
-    ["https://chatgpt.com/backend-api", "https://chatgpt.com/backend-api/codex"],
-    ["https://chatgpt.com/backend-api/v1", "https://chatgpt.com/backend-api/codex"],
-    ["https://chatgpt.com/backend-api/codex", "https://chatgpt.com/backend-api/codex"],
-    ["https://chatgpt.com/backend-api/codex/v1", "https://chatgpt.com/backend-api/codex"],
-    ["https://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/backend-api/codex"],
-    ["https://proxy.example.test/openai", "https://proxy.example.test/openai/codex"],
-    [
-      "https://proxy.example.test/openai/codex/responses",
-      "https://proxy.example.test/openai/codex",
-    ],
-  ])(
-    "uses OpenClaw transport for OpenAI Codex-response simple completions with baseUrl %s",
-    (baseUrl, expectedBaseUrl) => {
-      const model: Model<"openai-chatgpt-responses"> = {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        api: "openai-chatgpt-responses",
-        provider: "openai",
-        baseUrl,
-        reasoning: true,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
-        maxTokens: 8192,
-      };
+  it("keeps OpenAI ChatGPT responses on the provider-owned simple API", () => {
+    const model: Model<"openai-chatgpt-responses"> = {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-chatgpt-responses",
+      provider: "openai",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    };
+    resolveProviderStreamFn.mockReturnValueOnce(undefined);
 
-      resolveProviderStreamFn.mockReturnValueOnce(undefined);
-      createOpenClawTransportStreamFnForModel.mockReturnValueOnce("codex-transport-stream");
-      resolveTransportAwareSimpleApi.mockReturnValueOnce("openclaw-openai-responses-transport");
+    const result = prepareModelForSimpleCompletion({ model });
 
-      const result = prepareModelForSimpleCompletion({ model });
-
-      // ChatGPT/Codex response endpoints share the transport stream, but the
-      // simple-completion API must normalize caller-supplied base URLs first.
-      expect(createOpenClawTransportStreamFnForModel).toHaveBeenCalledWith(
-        {
-          ...model,
-          baseUrl: expectedBaseUrl,
-        },
-        { cfg: undefined },
-      );
-      expect(ensureCustomApiRegistered).toHaveBeenCalledWith(
-        "openclaw-openai-responses-transport",
-        "codex-transport-stream",
-      );
-      expect(result).toEqual({
-        ...model,
-        baseUrl: expectedBaseUrl,
-        api: "openclaw-openai-responses-transport",
-      });
-      expect(prepareTransportAwareSimpleModel).not.toHaveBeenCalled();
-    },
-  );
+    expect(createOpenClawTransportStreamFnForModel).not.toHaveBeenCalled();
+    expect(resolveTransportAwareSimpleApi).not.toHaveBeenCalled();
+    expect(ensureCustomApiRegistered).not.toHaveBeenCalled();
+    expect(result).toBe(model);
+  });
 });

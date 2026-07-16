@@ -190,6 +190,7 @@ describe("resolveEmbeddedAgentStreamFn", () => {
   it("routes Codex responses fallbacks through OpenClaw native transport", async () => {
     // Codex OAuth models use the OpenClaw native transport, with prompt-cache
     // markers stripped before the harness sees system prompt text.
+    vi.mocked(providerTransportStream.createBoundaryAwareStreamFnForModel).mockClear();
     const nativeStreamFn = vi.fn(async (_model, context, options) => ({ context, options }));
     testing.setOpenClawNativeCodexResponsesStreamFnForTest(nativeStreamFn as never);
     const streamFn = resolveEmbeddedAgentStreamFn({
@@ -214,6 +215,7 @@ describe("resolveEmbeddedAgentStreamFn", () => {
     );
     expect(requireRecord(result.context, "codex native context").systemPrompt).toBe("intro\ntail");
     expect(requireRecord(result.options, "codex native options").apiKey).toBe("oauth-bearer-token");
+    expect(providerTransportStream.createBoundaryAwareStreamFnForModel).not.toHaveBeenCalled();
     expect(nativeStreamFn).toHaveBeenCalledTimes(1);
   });
 

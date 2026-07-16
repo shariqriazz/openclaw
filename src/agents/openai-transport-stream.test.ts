@@ -1256,6 +1256,20 @@ describe("openai transport stream", () => {
         contextWindow: 200000,
         maxTokens: 8192,
       } satisfies Model<"openai-chatgpt-responses">),
+    ).toBeUndefined();
+    expect(
+      createOpenClawTransportStreamFnForModel({
+        id: "codex-mini-latest",
+        name: "Codex Mini Latest",
+        api: "openai-chatgpt-responses",
+        provider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200000,
+        maxTokens: 8192,
+      } satisfies Model<"openai-chatgpt-responses">),
     ).toBeTypeOf("function");
     expect(
       createBoundaryAwareStreamFnForModel({
