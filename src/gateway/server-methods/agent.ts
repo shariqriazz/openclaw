@@ -63,6 +63,7 @@ import {
   resolveIngressWorkspaceOverrideForSpawnedRun,
 } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
+import { buildBareSessionResetPrompt } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommandFromIngress } from "../../commands/agent.js";
 import {
   evaluateSessionFreshness,
@@ -2090,6 +2091,10 @@ export const agentHandlers: GatewayRequestHandlers = {
             return;
           }
           message = postResetMessage;
+        } else if (resetReason === "new" && request.deliver !== true) {
+          // This deployment relies on bare /new starting a fresh model turn so
+          // the agent executes the configured Session Startup sequence.
+          message = buildBareSessionResetPrompt(cfg);
         } else {
           let resetAckResult: Awaited<ReturnType<typeof resolveBareSessionResetResult>>;
           try {

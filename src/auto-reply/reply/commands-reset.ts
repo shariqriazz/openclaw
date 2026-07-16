@@ -185,15 +185,15 @@ export async function maybeHandleResetCommand(
     workspaceDir: params.workspaceDir,
   });
   if (!resetTail) {
+    if (hookResult.routedReply) {
+      return { shouldContinue: false };
+    }
+    if (commandAction === "new") {
+      return { shouldContinue: true };
+    }
     return {
       shouldContinue: false,
-      ...(hookResult.routedReply
-        ? {}
-        : {
-            reply: {
-              text: commandAction === "reset" ? "✅ Session reset." : "✅ New session started.",
-            },
-          }),
+      reply: { text: "✅ Session reset." },
     };
   }
   return null;

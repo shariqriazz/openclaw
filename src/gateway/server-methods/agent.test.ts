@@ -6380,8 +6380,9 @@ describe("gateway agent handler", () => {
     expect(sessionStore["agent:main:main"]).toBeUndefined();
   });
 
-  it("handles bare /new by resetting the same session without running the model", async () => {
+  it("handles bare /new by resetting the same session and running startup", async () => {
     mockSessionResetSuccess({ reason: "new" });
+    primeMainAgentRun({ sessionId: "reset-session-id" });
     mocks.agentCommand.mockClear();
 
     const respond = await invokeAgent(
@@ -6397,19 +6398,14 @@ describe("gateway agent handler", () => {
     );
 
     expect(mocks.performGatewaySessionReset).toHaveBeenCalledTimes(1);
-    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    const call = await waitForAgentCommandCall();
+    expect(call.sessionId).toBe("reset-session-id");
+    expect(call.message).toContain("Execute your Session Startup sequence now");
     expect(mockCallArg(respond)).toBe(true);
     expectRecordFields(mockCallArg(respond, 0, 1), {
       runId: "test-idem-new",
-      status: "ok",
-      summary: "completed",
+      status: "accepted",
     });
-    const result = expectRecordFields(mockCallArg(respond, 0, 1), {}).result as {
-      payloads?: Array<{ text?: string }>;
-      meta?: { agentMeta?: { sessionId?: string } };
-    };
-    expect(result.payloads?.[0]?.text).toBe("✅ New session started.");
-    expect(result.meta?.agentMeta?.sessionId).toBe("reset-session-id");
   });
 
   it("handles bare /reset by resetting the same session without running the model", async () => {
@@ -6607,7 +6603,7 @@ describe("gateway agent handler", () => {
     );
   });
 
-  it("resets the selected global agent session for bare /new without startup context", async () => {
+  it("resets the selected global agent session for bare /new and runs startup", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
       agents: { list: [{ id: "main", default: true }, { id: "work" }] },
@@ -6629,6 +6625,21 @@ describe("gateway agent handler", () => {
         };
       },
     );
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: mocks.loadConfigReturn,
+      storePath: "/tmp/sessions.json",
+      entry: {
+        sessionId: "global-work-reset-session",
+        updatedAt: Date.now(),
+      },
+      canonicalKey: "global",
+    });
+    mocks.updateSessionStore.mockResolvedValue(undefined);
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+    mocks.agentCommand.mockClear();
 
     const respond = await invokeAgent(
       {
@@ -6644,14 +6655,14 @@ describe("gateway agent handler", () => {
     );
 
     expect(mocks.performGatewaySessionReset).toHaveBeenCalledTimes(1);
-    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    const call = await waitForAgentCommandCall();
+    expect(call.sessionId).toBe("global-work-reset-session");
+    expect(call.message).toContain("Execute your Session Startup sequence now");
     expect(mockCallArg(respond)).toBe(true);
-    const result = expectRecordFields(mockCallArg(respond, 0, 1), {}).result as {
-      payloads?: Array<{ text?: string }>;
-      meta?: { agentMeta?: { sessionId?: string } };
-    };
-    expect(result.payloads?.[0]?.text).toBe("✅ New session started.");
-    expect(result.meta?.agentMeta?.sessionId).toBe("global-work-reset-session");
+    expectRecordFields(mockCallArg(respond, 0, 1), {
+      runId: "test-idem-new-selected-global",
+      status: "accepted",
+    });
   });
 
   it("uses /reset suffix as the post-reset message for LLM-boundary timestamping", async () => {
