@@ -579,7 +579,7 @@ function buildRequestBody(
   }
 
   if (context.tools) {
-    const converted = convertResponsesToolPayload(context.tools, { strict: null });
+    const converted = convertResponsesToolPayload(context.tools, { model, strict: null });
     if (converted.projection.inputToolCount > 0 || converted.projection.diagnostics.length > 0) {
       body.tools = converted.tools;
       if (body.tools.length === 0) {
