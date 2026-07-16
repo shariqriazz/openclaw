@@ -8,11 +8,15 @@ import { findTaskByRunId, resetTaskRegistryForTests } from "../../tasks/task-reg
 import { formatTaskStatusDetail } from "../../tasks/task-status.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import * as cronSchedule from "../schedule.js";
-import { setupCronServiceSuite, writeCronStoreSnapshot } from "../service.test-harness.js";
+import {
+  createDeferred,
+  setupCronServiceSuite,
+  writeCronStoreSnapshot,
+} from "../service.test-harness.js";
 import * as cronStoreModule from "../store.js";
 import { loadCronJobsStoreWithConfigJobs, loadCronStore } from "../store.js";
 import type { CronJob } from "../types.js";
-import { add, list, remove, run, start, stop, update } from "./ops.js";
+import { add, enqueueRun, list, remove, run, start, stop, stopGraceful, update } from "./ops.js";
 import { createCronServiceState } from "./state.js";
 import { runMissedJobs } from "./timer.js";
 
@@ -202,6 +206,27 @@ function createMissedIsolatedJob(now: number): CronJob {
 }
 
 describe("cron service ops seam coverage", () => {
+  it("drains tracked runs and rejects new queued work during graceful stop", async () => {
+    const { storePath } = await makeStorePath();
+    const state = createOkIsolatedCronState({ storePath, now: Date.now() });
+    const release = createDeferred<void>();
+    state.inFlightRuns.add(release.promise);
+
+    let stopResolved = false;
+    const stopPromise = stopGraceful(state).then(() => {
+      stopResolved = true;
+    });
+    await Promise.resolve();
+
+    expect(state.stopped).toBe(true);
+    expect(stopResolved).toBe(false);
+    await expect(enqueueRun(state, "ignored", "force")).resolves.toEqual({ ok: false });
+
+    release.resolve();
+    await stopPromise;
+    expect(stopResolved).toBe(true);
+  });
+
   it("keeps core add paths on SQLite and leaves legacy JSON for doctor migration", async () => {
     const { storePath } = await makeStorePath();
     const now = Date.parse("2026-05-20T08:00:00.000Z");

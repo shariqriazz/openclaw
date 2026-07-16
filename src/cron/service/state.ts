@@ -220,6 +220,8 @@ export type CronServiceState = {
   pendingQuarantineConfigJobs: QuarantinedCronConfigJob[];
   lastQuarantineFailureWarnKey: string | null;
   storeLoadedAtMs: number | null;
+  /** Run promises whose final persist can occur outside the locked operation chain. */
+  inFlightRuns: Set<Promise<unknown>>;
 };
 
 /** Creates mutable cron service state with a concrete clock dependency. */
@@ -240,6 +242,7 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     pendingQuarantineConfigJobs: [],
     lastQuarantineFailureWarnKey: null,
     storeLoadedAtMs: null,
+    inFlightRuns: new Set(),
   };
 }
 

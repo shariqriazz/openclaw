@@ -33,6 +33,10 @@ export class CronService implements CronServiceContract {
     ops.stop(this.state);
   }
 
+  async stopGraceful() {
+    await ops.stopGraceful(this.state);
+  }
+
   async status() {
     return await ops.status(this.state);
   }

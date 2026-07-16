@@ -94,6 +94,20 @@ export function createLazyGatewayCronState(params: LazyGatewayCronParams): Gatew
           .catch(() => {});
       }
     },
+    async stopGraceful() {
+      stopped = true;
+      const loading = loaded ? Promise.resolve(loaded) : cronStateLoader.peek();
+      if (!loading) {
+        return;
+      }
+      const resolved = await loading.catch(() => null);
+      if (!resolved) {
+        return;
+      }
+      resolved.started = false;
+      await resolved.state.cron.stopGraceful();
+      resolved.state.stopExitWatchers?.();
+    },
     async status() {
       return await (await load()).state.cron.status();
     },

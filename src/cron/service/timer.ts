@@ -1312,6 +1312,16 @@ export async function onTimer(state: CronServiceState) {
     armRunningRecheckTimer(state);
     return;
   }
+  const tickPromise = runTimerTickBody(state);
+  state.inFlightRuns.add(tickPromise);
+  try {
+    await tickPromise;
+  } finally {
+    state.inFlightRuns.delete(tickPromise);
+  }
+}
+
+async function runTimerTickBody(state: CronServiceState) {
   state.running = true;
   // Keep a watchdog timer armed while a tick is executing. If execution hangs
   // (for example in a provider call), the scheduler still wakes to re-check.

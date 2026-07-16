@@ -111,6 +111,19 @@ describe("createLazyGatewayCronState", () => {
     expect(cron["start"]).toHaveBeenCalledTimes(2);
   });
 
+  it("gracefully stops a loaded cron service", async () => {
+    const cron = createCronService();
+    const stopExitWatchers = vi.fn();
+    hoisted.setState({ ...createCronState(cron), stopExitWatchers });
+
+    const lazy = createLazyGatewayCronState(createParams());
+    await lazy.cron.start();
+    await lazy.cron.stopGraceful();
+
+    expect(cron["stopGraceful"]).toHaveBeenCalledTimes(1);
+    expect(stopExitWatchers).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps synchronous wake non-blocking before the cron service is loaded", async () => {
     const cron = createCronService();
     hoisted.setState(createCronState(cron));
@@ -173,6 +186,7 @@ function createCronService(): CronServiceContract {
   return {
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
+    stopGraceful: vi.fn(async () => undefined),
     status: vi.fn(async () => ({ enabled: true }) as never),
     list: vi.fn(async () => [] as never),
     listPage: vi.fn(async () => ({ items: [], total: 0 }) as never),

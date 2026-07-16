@@ -31,6 +31,7 @@ const unavailableCron: CronServiceContract = {
     cronUnavailable();
   },
   stop: () => {},
+  stopGraceful: async () => {},
   status: async () => cronUnavailable(),
   list: async () => cronUnavailable(),
   listPage: async () => cronUnavailable(),

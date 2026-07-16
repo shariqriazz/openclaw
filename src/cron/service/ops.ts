@@ -318,6 +318,27 @@ export function stop(state: CronServiceState) {
   stopTimer(state);
 }
 
+/** Drain deferred run persists before replacing a live cron service. */
+export async function stopGraceful(state: CronServiceState) {
+  state.stopped = true;
+  stopTimer(state);
+  await Promise.allSettled(state.inFlightRuns);
+  await locked(state, async () => {
+    stopTimer(state);
+    if (!state.store) {
+      return;
+    }
+    try {
+      await persist(state);
+    } catch (err) {
+      state.deps.log.warn(
+        { err: String(err) },
+        "cron: stopGraceful persist failed, proceeding with shutdown",
+      );
+    }
+  });
+}
+
 /** Returns cron service status after a read-only maintenance pass. */
 export async function status(state: CronServiceState) {
   return await locked(state, async () => {
@@ -1252,13 +1273,19 @@ export async function run(
 
 /** Queues a manual cron run behind the cron command lane and returns an immediate run id. */
 export async function enqueueRun(state: CronServiceState, id: string, mode?: "due" | "force") {
+  if (state.stopped) {
+    return { ok: false } as const;
+  }
   const disposition = await inspectManualRunDisposition(state, id, mode);
   if (!disposition.ok || !("runnable" in disposition && disposition.runnable)) {
     return disposition;
   }
+  if (state.stopped) {
+    return { ok: false } as const;
+  }
 
   const runId = `manual:${id}:${state.deps.nowMs()}:${nextManualRunId++}`;
-  void enqueueCommandInLane(
+  const runPromise = enqueueCommandInLane(
     CommandLane.Cron,
     async () => {
       const result = await run(state, id, mode, { runId });
@@ -1279,7 +1306,13 @@ export async function enqueueRun(state: CronServiceState, id: string, mode?: "du
         );
       },
     },
-  ).catch((err: unknown) => {
+  );
+  state.inFlightRuns.add(runPromise);
+  void runPromise.then(
+    () => state.inFlightRuns.delete(runPromise),
+    () => state.inFlightRuns.delete(runPromise),
+  );
+  void runPromise.catch((err: unknown) => {
     state.deps.log.error(
       { jobId: id, runId, err: String(err) },
       "cron: queued manual run background execution failed",
