@@ -510,12 +510,7 @@ describe("streamOpenAICodexResponses transport", () => {
     expect(result.errorMessage).toBe("stop after payload");
     expect(capturedPayload?.store).toBe(false);
     const reasoningItem = capturedPayload?.input?.find((item) => item.type === "reasoning");
-    expect(reasoningItem).toMatchObject({
-      type: "reasoning",
-      encrypted_content: "ciphertext",
-      summary: [],
-    });
-    expect(reasoningItem).not.toHaveProperty("id");
+    expect(reasoningItem).toBeUndefined();
     const messageItem = capturedPayload?.input?.find((item) => item.type === "message");
     expect(messageItem).toMatchObject({
       type: "message",

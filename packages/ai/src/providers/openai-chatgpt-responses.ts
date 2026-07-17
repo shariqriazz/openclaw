@@ -551,6 +551,7 @@ function buildRequestBody(
   const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
     includeSystemPrompt: false,
     replayResponsesItemIds: false,
+    replayEncryptedReasoning: false,
   });
 
   const body: RequestBody = {
