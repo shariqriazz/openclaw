@@ -496,6 +496,12 @@ describe("handleCommands reset hooks", () => {
     const result = await maybeHandleResetCommand(params);
 
     expect(result).toEqual({ shouldContinue: true });
+    expect(params.command.commandBodyNormalized).toContain(
+      "A new session was started via /new or /reset.",
+    );
+    expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toBe(
+      params.command.commandBodyNormalized,
+    );
     expectObjectFields(firstHookEvent(), { type: "command", action: "new" }, "hook event");
   });
 
