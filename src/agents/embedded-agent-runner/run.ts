@@ -2852,6 +2852,12 @@ async function runEmbeddedAgentInternal(
                     degradedReason: "context_overflow",
                   },
                 );
+                const recoveryTargetTokens =
+                  typeof preflightRecovery?.promptBudgetBeforeReserve === "number" &&
+                  Number.isFinite(preflightRecovery.promptBudgetBeforeReserve) &&
+                  preflightRecovery.promptBudgetBeforeReserve > 0
+                    ? Math.floor(preflightRecovery.promptBudgetBeforeReserve)
+                    : undefined;
                 compactResult = await compactContextEngineWithSafetyTimeout(
                   contextEngine,
                   {
@@ -2863,7 +2869,10 @@ async function runEmbeddedAgentInternal(
                       ? { currentTokenCount: overflowTokenCountForCompaction }
                       : {}),
                     force: true,
-                    compactionTarget: "budget",
+                    compactionTarget: recoveryTargetTokens === undefined ? "budget" : "threshold",
+                    ...(recoveryTargetTokens !== undefined
+                      ? { targetPromptTokens: recoveryTargetTokens }
+                      : {}),
                     runtimeContext: overflowCompactionRuntimeContext,
                     runtimeSettings: overflowCompactionRuntimeSettings,
                   },
@@ -2916,7 +2925,22 @@ async function runEmbeddedAgentInternal(
                 }
                 continue;
               }
-              if (compactResult.compacted) {
+              const compactionTokensBefore = compactResult.result?.tokensBefore;
+              const compactionTokensAfter = compactResult.result?.tokensAfter;
+              const compactionMadeNoTokenProgress =
+                compactResult.compacted &&
+                typeof compactionTokensBefore === "number" &&
+                Number.isFinite(compactionTokensBefore) &&
+                typeof compactionTokensAfter === "number" &&
+                Number.isFinite(compactionTokensAfter) &&
+                compactionTokensAfter >= compactionTokensBefore;
+              if (compactionMadeNoTokenProgress) {
+                log.warn(
+                  `auto-compaction made no token progress for ${provider}/${modelId}: ` +
+                    `${compactionTokensBefore} -> ${compactionTokensAfter}`,
+                );
+              }
+              if (compactResult.compacted && !compactionMadeNoTokenProgress) {
                 adoptCompactionTranscript(compactResult);
                 if (
                   typeof compactResult.result?.tokensAfter === "number" &&

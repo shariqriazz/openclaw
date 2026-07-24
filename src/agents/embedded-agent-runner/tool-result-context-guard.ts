@@ -2,6 +2,7 @@
  * Installs context guards for oversized tool-result histories.
  */
 import type {
+  AssembleResult,
   ContextEngine,
   ContextEngineRuntimeContext,
   ContextEngineRuntimeSettings,
@@ -10,7 +11,10 @@ import type { AgentMessage } from "../runtime/index.js";
 import { formatContextLimitTruncationNotice } from "./context-truncation-notice.js";
 import { log } from "./logger.js";
 import { MidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./run/midturn-precheck.js";
-import { shouldPreemptivelyCompactBeforePrompt } from "./run/preemptive-compaction.js";
+import {
+  shouldPreemptivelyCompactBeforePrompt,
+  type LlmBoundaryTokenPressure,
+} from "./run/preemptive-compaction.js";
 import {
   CHARS_PER_TOKEN_ESTIMATE,
   TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE,
@@ -48,6 +52,7 @@ type MidTurnPrecheckOptions = {
   reserveTokens: () => number;
   toolResultMaxChars?: number;
   getSystemPrompt?: () => string | undefined;
+  getLlmBoundaryTokenPressure?: () => LlmBoundaryTokenPressure | undefined;
   getPrePromptMessageCount?: () => number;
   onMidTurnPrecheck?: (request: MidTurnPrecheckRequest) => void;
 };
@@ -315,8 +320,17 @@ function toMidTurnPrecheckRequest(
     overflowTokens: result.overflowTokens,
     toolResultReducibleChars: result.toolResultReducibleChars,
     effectiveReserveTokens: result.effectiveReserveTokens,
+    pressureSource: result.pressureSource,
   };
 }
+
+export type ContextEngineLoopAssemblyState =
+  | {
+      status: "assembled";
+      estimatedTokens: number;
+      promptAuthority: NonNullable<AssembleResult["promptAuthority"]>;
+    }
+  | { status: "fallback" };
 
 /**
  * Per-iteration `afterTurn` + `assemble` wrapper for sessions where
@@ -334,6 +348,7 @@ export function installContextEngineLoopHook(params: {
   repairAssembledMessages?: (messages: AgentMessage[]) => AgentMessage[];
   getPrePromptMessageCount?: () => number;
   onAfterTurnCheckpoint?: (messageCount: number) => void;
+  onAssemblyState?: (state: ContextEngineLoopAssemblyState) => void;
   getRuntimeContext?: (params: {
     messages: AgentMessage[];
     prePromptMessageCount: number;
@@ -442,6 +457,11 @@ export function installContextEngineLoopHook(params: {
         runtimeSettings: params.runtimeSettings,
       });
       if (assembled && Array.isArray(assembled.messages)) {
+        params.onAssemblyState?.({
+          status: "assembled",
+          estimatedTokens: assembled.estimatedTokens,
+          promptAuthority: assembled.promptAuthority ?? "assembled",
+        });
         const repairedMessages =
           params.repairAssembledMessages?.(assembled.messages) ?? assembled.messages;
         if (repairedMessages !== providerMessages || assembled.messages !== providerMessages) {
@@ -456,6 +476,7 @@ export function installContextEngineLoopHook(params: {
       lastSeenLength = prePromptMessageCount;
       lastAssembledView = null;
       lastSourceMessages = transcriptMessages;
+      params.onAssemblyState?.({ status: "fallback" });
     }
 
     return providerMessages;
@@ -535,6 +556,7 @@ export function installToolResultContextGuard(params: {
           contextTokenBudget: params.midTurnPrecheck.contextTokenBudget,
           reserveTokens: params.midTurnPrecheck.reserveTokens(),
           toolResultMaxChars: params.midTurnPrecheck.toolResultMaxChars,
+          llmBoundaryTokenPressure: params.midTurnPrecheck.getLlmBoundaryTokenPressure?.(),
         });
         const request = toMidTurnPrecheckRequest(precheck);
         log.debug(

@@ -8,6 +8,7 @@ import { estimateToolResultReductionPotential } from "../tool-result-truncation.
 let PREEMPTIVE_OVERFLOW_ERROR_TEXT: typeof import("./preemptive-compaction.js").PREEMPTIVE_OVERFLOW_ERROR_TEXT;
 let estimateLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateLlmBoundaryTokenPressure;
 let buildPrePromptContextBudgetStatus: typeof import("./preemptive-compaction.js").buildPrePromptContextBudgetStatus;
+let estimateContextEngineLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateContextEngineLlmBoundaryTokenPressure;
 let estimateRenderedLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateRenderedLlmBoundaryTokenPressure;
 let formatPrePromptPrecheckLog: typeof import("./preemptive-compaction.js").formatPrePromptPrecheckLog;
 let shouldPreemptivelyCompactBeforePrompt: typeof import("./preemptive-compaction.js").shouldPreemptivelyCompactBeforePrompt;
@@ -20,6 +21,7 @@ beforeAll(async () => {
     PREEMPTIVE_OVERFLOW_ERROR_TEXT,
     estimateLlmBoundaryTokenPressure,
     buildPrePromptContextBudgetStatus,
+    estimateContextEngineLlmBoundaryTokenPressure,
     estimateRenderedLlmBoundaryTokenPressure,
     formatPrePromptPrecheckLog,
     shouldPreemptivelyCompactBeforePrompt,
@@ -250,6 +252,30 @@ describe("preemptive-compaction", () => {
     expect(result.estimatedPromptTokens).toBe(estimatedPromptTokens);
     expect(result.route).toBe("compact_only");
     expect(result.shouldCompact).toBe(true);
+  });
+
+  it("combines authoritative engine context with host-owned prompt overhead", () => {
+    const estimatedPromptTokens = estimateContextEngineLlmBoundaryTokenPressure({
+      estimatedContextTokens: 127_114,
+      systemPrompt: "s".repeat(40_000),
+      prompt: "",
+      toolSchemaChars: 30_000,
+    });
+    const decision = shouldPreemptivelyCompactBeforePrompt({
+      messages: [makeToolResultMessage("x".repeat(300_000))],
+      systemPrompt: "ignored because authoritative pressure is supplied",
+      prompt: "",
+      contextTokenBudget: 372_000,
+      reserveTokens: 100_000,
+      llmBoundaryTokenPressure: {
+        estimatedPromptTokens,
+        source: "context_engine_assembled_plus_host_overhead",
+      },
+    });
+
+    expect(estimatedPromptTokens).toBeLessThan(272_000);
+    expect(decision.route).toBe("fits");
+    expect(decision.pressureSource).toBe("context_engine_assembled_plus_host_overhead");
   });
 
   it("counts array/object tool-result payloads at the LLM boundary", () => {

@@ -2166,7 +2166,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(hoisted.preemptiveCompactionCalls.at(-1)).not.toHaveProperty("unwindowedMessages");
   });
 
-  it("skips the generic precheck when the context engine owns compaction", async () => {
+  it("uses authoritative assembled pressure when the context engine owns compaction", async () => {
     let sawPrompt = false;
     const hugeHistory = "large raw history ".repeat(2_000);
 
@@ -2203,7 +2203,11 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(sawPrompt).toBe(true);
     expect(result.promptError).toBeNull();
     expect(result.promptErrorSource).toBeNull();
-    expect(hoisted.preemptiveCompactionCalls).toHaveLength(0);
+    expect(hoisted.preemptiveCompactionCalls).toHaveLength(1);
+    expect(hoisted.preemptiveCompactionCalls.at(-1)?.llmBoundaryTokenPressure).toMatchObject({
+      estimatedPromptTokens: expect.any(Number),
+      source: "context_engine_assembled_plus_host_overhead",
+    });
   });
 
   it("keeps the generic precheck active when owning context engine assembly fails", async () => {

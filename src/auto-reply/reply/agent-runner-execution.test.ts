@@ -866,6 +866,44 @@ describe("buildContextOverflowRecoveryText", () => {
     expect(text).not.toContain("reset our conversation");
   });
 
+  it("does not recommend a lower reserve when recovery failed above the usual floor", () => {
+    const text = buildContextOverflowRecoveryText({
+      preserveSessionMapping: true,
+      cfg: {},
+      primaryProvider: "openai",
+      primaryModel: "gpt-5.6-sol",
+      activeSessionEntry: {
+        sessionId: "session",
+        updatedAt: 1,
+        modelProvider: "openai",
+        model: "gpt-5.6-sol",
+        contextTokens: 372_000,
+        contextBudgetStatus: {
+          schemaVersion: 1,
+          source: "pre-prompt-estimate",
+          updatedAt: 1,
+          provider: "openai",
+          model: "gpt-5.6-sol",
+          route: "compact_only",
+          shouldCompact: true,
+          estimatedPromptTokens: 272_537,
+          contextTokenBudget: 372_000,
+          promptBudgetBeforeReserve: 272_000,
+          reserveTokens: 100_000,
+          effectiveReserveTokens: 100_000,
+          remainingPromptBudgetTokens: -537,
+          overflowTokens: 537,
+          toolResultReducibleChars: 0,
+          messageCount: 103,
+        },
+      },
+    });
+
+    expect(text).toContain("current effective compaction reserve is 100000 tokens");
+    expect(text).toContain("context-engine recovery failed");
+    expect(text).not.toContain("to 50000 or higher");
+  });
+
   it("falls back to session entry model when runtimeProvider is not provided", () => {
     const text = buildContextOverflowRecoveryText({
       cfg: {

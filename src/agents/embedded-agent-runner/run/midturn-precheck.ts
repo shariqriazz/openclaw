@@ -14,6 +14,7 @@ export type MidTurnPrecheckRequest = {
   overflowTokens: number;
   toolResultReducibleChars: number;
   effectiveReserveTokens: number;
+  pressureSource?: string;
 };
 
 /** Stable message used to identify synthetic mid-turn overflow errors in session cleanup. */

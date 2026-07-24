@@ -461,6 +461,14 @@ export interface ContextEngine {
     currentTokenCount?: number;
     /** Controls convergence target; defaults to budget. */
     compactionTarget?: "budget" | "threshold";
+    /**
+     * Optional host prompt boundary that compaction must reach.
+     *
+     * `tokenBudget` remains the model/runtime input capacity. Engines with a
+     * stricter policy target should converge to the lower of that policy
+     * target and this host boundary.
+     */
+    targetPromptTokens?: number;
     customInstructions?: string;
     /** Optional runtime-owned context for engines that need caller state. */
     runtimeSettings?: ContextEngineRuntimeSettings;

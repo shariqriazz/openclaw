@@ -287,6 +287,29 @@ export function estimateRenderedLlmBoundaryTokenPressure(params: {
   return Math.max(0, Math.ceil((systemTokens + promptTokens) * SAFETY_MARGIN));
 }
 
+/** Combines engine-owned context accounting with prompt parts owned by the host. */
+export function estimateContextEngineLlmBoundaryTokenPressure(params: {
+  estimatedContextTokens: number;
+  systemPrompt?: string;
+  prompt: string;
+  toolSchemaChars?: number;
+}): number {
+  const contextTokens = Number.isFinite(params.estimatedContextTokens)
+    ? Math.max(0, Math.ceil(params.estimatedContextTokens))
+    : 0;
+  const renderedTokens = estimateRenderedLlmBoundaryTokenPressure({
+    systemPrompt: params.systemPrompt,
+    prompt: params.prompt,
+  });
+  const toolSchemaTokens =
+    typeof params.toolSchemaChars === "number" && Number.isFinite(params.toolSchemaChars)
+      ? Math.ceil(
+          (Math.max(0, params.toolSchemaChars) / JSON_PAYLOAD_CHARS_PER_TOKEN) * SAFETY_MARGIN,
+        )
+      : 0;
+  return Math.ceil(contextTokens * SAFETY_MARGIN) + renderedTokens + toolSchemaTokens;
+}
+
 function normalizeLlmBoundaryTokenPressure(
   pressure: LlmBoundaryTokenPressure | undefined,
 ): LlmBoundaryTokenPressure | undefined {

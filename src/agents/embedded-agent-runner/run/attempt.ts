@@ -349,6 +349,7 @@ import {
 import {
   installContextEngineLoopHook,
   installToolResultContextGuard,
+  type ContextEngineLoopAssemblyState,
 } from "../tool-result-context-guard.js";
 import {
   resolveLiveToolResultMaxChars,
@@ -514,6 +515,7 @@ import {
 import {
   PREEMPTIVE_OVERFLOW_ERROR_TEXT,
   buildPrePromptContextBudgetStatus,
+  estimateContextEngineLlmBoundaryTokenPressure,
   estimateLlmBoundaryTokenPressure,
   estimateRenderedLlmBoundaryTokenPressure,
   formatPrePromptPrecheckLog,
@@ -528,7 +530,7 @@ import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types
 
 type PreflightRecoveryBudgetSnapshot = Pick<
   MidTurnPrecheckRequest,
-  "estimatedPromptTokens" | "promptBudgetBeforeReserve" | "overflowTokens"
+  "estimatedPromptTokens" | "promptBudgetBeforeReserve" | "overflowTokens" | "pressureSource"
 >;
 
 // Carries the measured prompt budget into the outer recovery loop. The synthetic
@@ -539,6 +541,7 @@ function buildPreflightRecoveryBudgetSnapshot(snapshot: PreflightRecoveryBudgetS
     estimatedPromptTokens: snapshot.estimatedPromptTokens,
     promptBudgetBeforeReserve: snapshot.promptBudgetBeforeReserve,
     overflowTokens: snapshot.overflowTokens,
+    pressureSource: snapshot.pressureSource,
   };
 }
 
@@ -2675,6 +2678,8 @@ export async function runEmbeddedAttempt(
       let contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]> =
         "assembled";
       let contextEngineAssemblySucceeded = false;
+      let contextEngineAssembledEstimatedTokens: number | undefined;
+      let contextEngineLoopAssemblyState: ContextEngineLoopAssemblyState | undefined;
       const inFlightPromptSettlePromises = new Set<Promise<void>>();
       const inFlightAbortSettlePromises = new Set<Promise<void>>();
       const trackSettlePromise = (
@@ -2740,6 +2745,23 @@ export async function runEmbeddedAttempt(
               reserveTokens: () => settingsManager.getCompactionReserveTokens(),
               toolResultMaxChars: toolResultMaxCharsForGuard,
               getSystemPrompt: () => systemPromptText,
+              getLlmBoundaryTokenPressure: () => {
+                if (
+                  contextEngineLoopAssemblyState?.status !== "assembled" ||
+                  contextEngineLoopAssemblyState.promptAuthority !== "assembled"
+                ) {
+                  return undefined;
+                }
+                return {
+                  estimatedPromptTokens: estimateContextEngineLlmBoundaryTokenPressure({
+                    estimatedContextTokens: contextEngineLoopAssemblyState.estimatedTokens,
+                    systemPrompt: systemPromptText,
+                    prompt: "",
+                    toolSchemaChars: systemPromptReport?.tools.schemaChars,
+                  }),
+                  source: "context_engine_assembled_plus_host_overhead",
+                };
+              },
               getPrePromptMessageCount: () => prePromptMessageCount,
               onMidTurnPrecheck,
             },
@@ -2776,6 +2798,9 @@ export async function runEmbeddedAttempt(
           getPrePromptMessageCount: () => prePromptMessageCount,
           onAfterTurnCheckpoint: (messageCount) => {
             contextEngineAfterTurnCheckpoint = messageCount;
+          },
+          onAssemblyState: (state) => {
+            contextEngineLoopAssemblyState = state;
           },
           getRuntimeContext: ({ messages, prePromptMessageCount: loopPrePromptMessageCount }) =>
             buildAfterTurnRuntimeContext({
@@ -3490,6 +3515,12 @@ export async function runEmbeddedAttempt(
             }
             contextEnginePromptAuthority = assembled.promptAuthority ?? "assembled";
             contextEngineAssemblySucceeded = true;
+            contextEngineAssembledEstimatedTokens = assembled.estimatedTokens;
+            contextEngineLoopAssemblyState = {
+              status: "assembled",
+              estimatedTokens: assembled.estimatedTokens,
+              promptAuthority: contextEnginePromptAuthority,
+            };
             if (contextEnginePromptAuthority === "preassembly_may_overflow") {
               unwindowedContextEngineMessagesForPrecheck =
                 preassemblyContextEngineMessagesForPrecheck;
@@ -4015,6 +4046,7 @@ export async function runEmbeddedAttempt(
               `overflowTokens=${request.overflowTokens} ` +
               `toolResultReducibleChars=${request.toolResultReducibleChars} ` +
               `effectiveReserveTokens=${request.effectiveReserveTokens} ` +
+              `pressureSource=${request.pressureSource ?? "unknown"} ` +
               `prePromptMessageCount=${prePromptMessageCount} ` +
               (extra ? `${extra} ` : "") +
               `sessionFile=${params.sessionFile}`,
@@ -4834,23 +4866,24 @@ export async function runEmbeddedAttempt(
                   llmBoundaryOptionsForPrecheck,
                 )
               : undefined;
-          const llmBoundaryTokenPressure = estimateLlmBoundaryTokenPressure({
-            messages: hookMessagesForCurrentPrompt,
-            systemPrompt: systemPromptForHook,
-            prompt: llmBoundaryPromptForPrecheck,
-          });
+          const hasAuthoritativeContextEngineEstimate =
+            contextEngineAssemblySucceeded &&
+            contextEnginePromptAuthority === "assembled" &&
+            typeof contextEngineAssembledEstimatedTokens === "number";
+          const llmBoundaryTokenPressure = hasAuthoritativeContextEngineEstimate
+            ? estimateContextEngineLlmBoundaryTokenPressure({
+                estimatedContextTokens: contextEngineAssembledEstimatedTokens,
+                systemPrompt: systemPromptForHook,
+                prompt: llmBoundaryPromptForPrecheck,
+                toolSchemaChars: systemPromptReport?.tools.schemaChars,
+              })
+            : estimateLlmBoundaryTokenPressure({
+                messages: hookMessagesForCurrentPrompt,
+                systemPrompt: systemPromptForHook,
+                prompt: llmBoundaryPromptForPrecheck,
+              });
           let preemptiveCompaction = null;
-          const shouldSkipPrecheck =
-            skipPromptSubmission ||
-            (contextEngineAssemblySucceeded &&
-              activeContextEngine?.info.ownsCompaction &&
-              contextEnginePromptAuthority !== "preassembly_may_overflow");
-
-          if (shouldSkipPrecheck && !skipPromptSubmission) {
-            log.info(
-              `[context-overflow-precheck] skipped: context engine "${activeContextEngine!.info.id}" owns compaction`,
-            );
-          }
+          const shouldSkipPrecheck = skipPromptSubmission;
 
           if (!shouldSkipPrecheck) {
             preemptiveCompaction = shouldPreemptivelyCompactBeforePrompt({
@@ -4865,7 +4898,9 @@ export async function runEmbeddedAttempt(
               toolResultMaxChars: promptToolResultMaxChars,
               llmBoundaryTokenPressure: {
                 estimatedPromptTokens: llmBoundaryTokenPressure,
-                source: "llm_boundary_normalized_prompt",
+                source: hasAuthoritativeContextEngineEstimate
+                  ? "context_engine_assembled_plus_host_overhead"
+                  : "llm_boundary_normalized_prompt",
                 renderedChars: llmBoundaryPromptForPrecheck.length,
               },
             });

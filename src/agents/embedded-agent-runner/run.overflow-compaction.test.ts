@@ -2175,6 +2175,66 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     });
   });
 
+  it("passes the pre-reserve boundary as an explicit threshold recovery target", async () => {
+    mockedContextEngine.info.ownsCompaction = true;
+    mockedExtractObservedOverflowTokenCount.mockReturnValueOnce(undefined);
+    mockedResolveContextWindowInfo.mockReturnValue({
+      tokens: 372_000,
+      source: "model",
+    });
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          promptError: makeOverflowError(),
+          promptErrorSource: "precheck",
+          preflightRecovery: {
+            route: "compact_only",
+            source: "mid-turn",
+            estimatedPromptTokens: 272_537,
+            promptBudgetBeforeReserve: 272_000,
+            overflowTokens: 537,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+    mockedCompactDirect.mockResolvedValueOnce(
+      makeCompactionSuccess({
+        tokensBefore: 272_537,
+        tokensAfter: 130_000,
+      }),
+    );
+
+    await runEmbeddedAgent(overflowBaseRunParams);
+
+    expectMockCallFields(mockedCompactDirect, {
+      tokenBudget: 372_000,
+      currentTokenCount: 272_537,
+      compactionTarget: "threshold",
+      targetPromptTokens: 272_000,
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops overflow retries when compaction reports no token progress", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({ promptError: makeOverflowError() }),
+    );
+    mockedCompactDirect.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: {
+        tokensBefore: 278_459,
+        tokensAfter: 278_459,
+      },
+    });
+
+    const result = await runEmbeddedAgent(overflowBaseRunParams);
+
+    expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(result.meta.error?.kind).toBe("context_overflow");
+  });
+
   it("threads prompt-cache runtime context into overflow compaction", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(

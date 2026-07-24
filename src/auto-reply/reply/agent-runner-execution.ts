@@ -1276,8 +1276,22 @@ function resolveContextWindowForCompactionHint(params: {
   return agentCap ?? contextWindow;
 }
 
-function buildContextOverflowResetHint(contextWindowTokens: number | undefined): string {
+function buildContextOverflowResetHint(
+  contextWindowTokens: number | undefined,
+  effectiveReserveTokens?: number,
+): string {
   const reserveFloor = computeContextAwareReserveTokensFloor(contextWindowTokens);
+  if (
+    typeof effectiveReserveTokens === "number" &&
+    Number.isFinite(effectiveReserveTokens) &&
+    effectiveReserveTokens >= reserveFloor
+  ) {
+    return (
+      `\n\nThe current effective compaction reserve is ${Math.floor(effectiveReserveTokens)} tokens, ` +
+      `already at or above the usual ${reserveFloor}-token floor. This indicates context-engine ` +
+      "recovery failed rather than an undersized reserve."
+    );
+  }
   return (
     "\n\nTo prevent this, increase your compaction buffer by setting " +
     `\`agents.defaults.compaction.reserveTokensFloor\` to ${reserveFloor} or higher in your config.`
@@ -1499,7 +1513,14 @@ export function buildContextOverflowRecoveryText(params: {
         activeSessionEntry: params.activeSessionEntry,
       })
     : undefined;
-  return prefix + (heartbeatBleedHint ?? buildContextOverflowResetHint(primaryContextWindow));
+  return (
+    prefix +
+    (heartbeatBleedHint ??
+      buildContextOverflowResetHint(
+        primaryContextWindow,
+        params.activeSessionEntry?.contextBudgetStatus?.effectiveReserveTokens,
+      ))
+  );
 }
 
 function buildRestartLifecycleReplyText(): string {
