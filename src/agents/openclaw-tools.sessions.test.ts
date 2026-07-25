@@ -1700,7 +1700,6 @@ describe("sessions tools", () => {
       debounceMs: 0,
       deliveryTimeoutMs: 30_000,
       waitForTranscriptCommit: true,
-      sourceReplyDeliveryMode: "automatic",
     });
     expect(calls.some((call) => call.method === "agent")).toBe(false);
   });

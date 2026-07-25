@@ -257,18 +257,20 @@ async function startAgentRun(params: {
   | { ok: false; result: ReturnType<typeof jsonResult> }
 > {
   try {
-    const activeRunSessionId =
-      params.allowActiveRunQueueDelivery && isRunScopedAgentSessionKey(params.sessionKey)
-        ? resolveActiveEmbeddedRunSessionId(params.sessionKey)
-        : undefined;
+    const activeRunSessionId = params.allowActiveRunQueueDelivery
+      ? resolveActiveEmbeddedRunSessionId(params.sessionKey)
+      : undefined;
     const messageText =
       typeof params.sendParams.message === "string" ? params.sendParams.message : undefined;
     if (activeRunSessionId && messageText) {
-      const sourceReplyDeliveryMode =
-        params.sendParams.sourceReplyDeliveryMode === "automatic" ||
-        params.sendParams.sourceReplyDeliveryMode === "message_tool_only"
+      // A persistent active run owns its existing reply sink. Only run-scoped
+      // completion delivery carries the sender's mode into the queue safety check.
+      const sourceReplyDeliveryMode = isRunScopedAgentSessionKey(params.sessionKey)
+        ? params.sendParams.sourceReplyDeliveryMode === "automatic" ||
+          params.sendParams.sourceReplyDeliveryMode === "message_tool_only"
           ? params.sendParams.sourceReplyDeliveryMode
-          : undefined;
+          : undefined
+        : undefined;
       const queueOptions: EmbeddedAgentQueueMessageOptions = {
         steeringMode: "all",
         debounceMs: 0,
