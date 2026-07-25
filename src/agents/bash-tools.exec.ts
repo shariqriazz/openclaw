@@ -80,6 +80,7 @@ import {
   formatUnavailableWorkdirFailure,
   resolveExecWorkdir,
 } from "./bash-tools.exec-workdir.js";
+import { createExecSchema, resolveExecSchemaHostValues } from "./bash-tools.schemas.js";
 import {
   buildSandboxEnv,
   clampWithDefault,
@@ -1492,6 +1493,13 @@ export function createExecTool(
       agentId,
       reviewer: resolveExecReviewerDefaults({ defaults, agentId }),
     });
+  const scopedExecSchema = createExecSchema(
+    resolveExecSchemaHostValues({
+      configuredHost: defaults?.host,
+      sandboxAvailable: Boolean(defaults?.sandbox),
+      configuredNode: defaults?.node,
+    }),
+  );
 
   return {
     name: "exec",
@@ -1500,7 +1508,7 @@ export function createExecTool(
     get description() {
       return describeExecTool({ agentId, hasCronTool: defaults?.hasCronTool === true });
     },
-    parameters: execSchema,
+    parameters: scopedExecSchema,
     prepareBeforeToolCallParams: async (args, context) => {
       const params = await prepareParamsWithResolvedExecWorkdir(args);
       const workdirState = getResolvedExecWorkdirPreparedState(params);

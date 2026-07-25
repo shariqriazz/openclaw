@@ -308,6 +308,16 @@ const createNotifyOnExitExecTool = (overrides: Partial<ExecToolConfig> = {}) =>
     sessionKey: DEFAULT_NOTIFY_SESSION_KEY,
     ...overrides,
   });
+const readExecHostEnum = (tool: ExecToolInstance): string[] => {
+  const schema = tool.parameters as {
+    properties?: { host?: { enum?: unknown } };
+  };
+  const values = schema.properties?.host?.enum;
+  if (!Array.isArray(values) || !values.every((value) => typeof value === "string")) {
+    throw new Error("expected exec host enum");
+  }
+  return values;
+};
 const createScopedToolSet = (scopeKey: string) => ({
   exec: createTestExecTool({ backgroundMs: 10, scopeKey }),
   process: createProcessTool({ scopeKey }),
@@ -704,6 +714,22 @@ const runNotifyNoopCase = async ({ label, defaults, expectNotification }: Notify
 };
 
 describe("tool descriptions", () => {
+  it("advertises only exec hosts available to the current tool instance", () => {
+    expect(readExecHostEnum(createExecTool({ host: "gateway" }))).toEqual(["auto", "gateway"]);
+    expect(readExecHostEnum(createExecTool({ host: "auto" }))).toEqual(["auto", "gateway"]);
+    expect(readExecHostEnum(createExecTool({ host: "auto", sandbox: {} as never }))).toEqual([
+      "auto",
+      "sandbox",
+    ]);
+    expect(readExecHostEnum(createExecTool({ host: "auto", node: "worker-1" }))).toEqual([
+      "auto",
+      "gateway",
+      "node",
+    ]);
+    expect(readExecHostEnum(createExecTool({ host: "sandbox" }))).toEqual(["auto"]);
+    expect(readExecHostEnum(createExecTool({ host: "node" }))).toEqual(["auto", "node"]);
+  });
+
   it("adds cron-specific deferred follow-up guidance only when cron is available", () => {
     const execWithCron = createTestExecTool({ hasCronTool: true });
     const processWithCron = createProcessTool({ hasCronTool: true });

@@ -185,6 +185,20 @@ describe("createOpenClawCodingTools", () => {
     expectListIncludes([...values], ["restart", "config.get", "config.patch", "config.apply"]);
   });
 
+  it("exposes the capability-scoped exec schema through the lazy tool wrapper", () => {
+    const tools = createOpenClawCodingTools({
+      config: testConfig,
+      exec: { host: "auto" },
+      sandbox: null,
+    });
+    const exec = requireTool(tools, "exec");
+    const parameters = exec.parameters as {
+      properties?: { host?: { enum?: unknown } };
+    };
+
+    expect(parameters.properties?.host?.enum).toEqual(["auto", "gateway"]);
+  });
+
   it("does not add Tool Search control tools from the shared factory by default", () => {
     const tools = createOpenClawCodingTools({
       config: {

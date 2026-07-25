@@ -57,7 +57,11 @@ import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { describeExecTool, describeProcessTool } from "./bash-tools.descriptions.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import type { ProcessToolDefaults } from "./bash-tools.process.js";
-import { execSchema, processSchema } from "./bash-tools.schemas.js";
+import {
+  createExecSchema,
+  processSchema,
+  resolveExecSchemaHostValues,
+} from "./bash-tools.schemas.js";
 import { listChannelAgentTools } from "./channel-tools.js";
 import { shouldSuppressManagedWebSearchTool } from "./codex-native-web-search.js";
 import {
@@ -201,7 +205,13 @@ function createLazyExecTool(defaults?: ExecToolDefaults): AnyAgentTool {
         hasCronTool: defaults?.hasCronTool === true,
       });
     },
-    parameters: execSchema,
+    parameters: createExecSchema(
+      resolveExecSchemaHostValues({
+        configuredHost: defaults?.host,
+        sandboxAvailable: Boolean(defaults?.sandbox),
+        configuredNode: defaults?.node,
+      }),
+    ),
     prepareBeforeToolCallParams: async (...args) =>
       (await loadTool()).prepareBeforeToolCallParams?.(...args) ?? args[0],
     finalizeBeforeToolCallParams: (params, preparedParams) =>
