@@ -1,17 +1,56 @@
-# Gateway Persistence Performance Plan
+# Gateway Reliability and Persistence Performance Plan
 
-- Status: proposed, not implemented
+- Status: active-turn redirect and correctness Batches 1-3 approved;
+  performance Phase 0 approved;
+  performance Phase 1 conditional on Phase 0 reproduction; performance Phase 2
+  conditional on Phase 1 measurements and migration proof
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
 
 ## Decision
 
-Adopt **SQLite session metadata plus one trajectory rewrite worker** as the
-target architecture.
+Execute one coordinated reliability and performance program with separate
+commits, validation gates, deployment steps, and rollback points:
+
+1. Add an explicit active-turn `redirect` mode for ordinary busy input and
+   repair persistent-subagent `sessions_send` through the same lifecycle
+   owner.
+2. Add typed stateless context-compaction fallback, preserve host recovery
+   targets, and deploy Lossless Claw from a clean committed checkout.
+3. Generate the exec host schema from session capabilities while retaining
+   runtime enforcement.
+4. Convert the historical performance proof into a repository-owned benchmark.
+5. Move trajectory rolling-window maintenance to one bounded worker if the
+   benchmark reproduces the result.
+6. Move session metadata to per-agent SQLite only if post-worker measurements,
+   the consumer audit, and migration rehearsal still support it.
+7. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
+   patch histories, protected behavior, validation commands, and deployment
+   lessons before final handoff.
+
+The target persistence architecture remains **SQLite session metadata plus one
+trajectory rewrite worker**.
+
+Execution uses global operator skills and direct source/runtime inspection only.
+Do not invoke OpenClaw repo-local skills, Crabbox, or Testbox. Run builds,
+focused tests, benchmarks, and soaks in a controlled local or standalone
+non-production environment that cannot touch live sessions, databases, config,
+Discord, cron state, or the active extension. Stop the production Gateway and
+freeze live writers before changing the active checkout or building artifacts
+served by production.
 
 This means:
 
+- `redirect` is additive. Existing `interrupt`, `steer`, `followup`, and
+  `collect` semantics remain unchanged, and an omitted queue mode continues to
+  default to `steer`.
+- This installation selects `redirect` explicitly only after source, tests,
+  build, deployment, and session-override checks pass.
+- The active reply operation owns busy-input redirect, persistent
+  `sessions_send`, transcript adoption, stale-completion rejection, and
+  finalization races. No competing Gateway turn may write the same active
+  session.
 - Session metadata moves from whole-file `sessions.json` replacement to
   row-level transactions in each agent's existing `openclaw-agent.sqlite`.
 - Session transcripts remain in their current JSONL format during this work.
@@ -26,10 +65,207 @@ This means:
   removes event-loop work before considering any operator-facing concurrency
   reduction.
 
-SQLite plus one worker was the best measured combination, but it is not a
-drop-in patch. The session accessor, plugin SDK compatibility surface, doctor
-migration, direct file consumers, backup/restore behavior, PI runtime, and
-Lossless Claw contract must move together.
+SQLite plus one worker was the best exploratory combination, but those
+benchmarks are not currently reproducible because their `/tmp` harness and
+fixtures were not retained. Phase 0 must reproduce the ranking in a
+repository-owned benchmark before Phase 1 begins.
+
+Phase 1 may move trajectory maintenance to one worker after that reproduction.
+Phase 2 remains the target architecture for session metadata, but activation is
+gated on post-Phase-1 measurements, a complete direct-consumer audit, and a
+migration and rollback rehearsal using copies of production-scale data. The
+session accessor, plugin SDK compatibility surface, doctor migration, direct
+file consumers, backup/restore behavior, PI runtime, and Lossless Claw contract
+must move together when Phase 2 is authorized.
+
+The correctness fixes are not implementation prerequisites merely to clear the
+way for storage work. They address independently reproducible production
+failures and must retain their own tests and rollback boundaries. The
+persistence redesign must not be used to hide or defer their ownership bugs.
+
+## Approved Scope and Order
+
+### Batch 1: Active-turn redirect and persistent-subagent ownership
+
+OpenClaw's current `interrupt` queue mode aborts the complete active run, waits
+for teardown, and starts another turn. It is not Hermes-style active-turn
+redirect. Current `steer` safely waits for a model/tool boundary but cannot
+cancel an obsolete model request. Configuration alone therefore cannot provide
+the requested behavior.
+
+Persistent subagent steering also starts a competing Gateway turn instead of
+joining the target's active embedded run. Captured failures show trusted STOP
+or follow-up messages followed by duplicated terminal assistant content and
+`EmbeddedAttemptSessionTakeoverError`.
+
+Required design:
+
+- Start with deterministic failing tests that reproduce both captured
+  timelines. If the duplicate final and takeover cannot be reproduced, stop and
+  investigate before changing production code.
+- Add `redirect` as a distinct queue mode. Do not redefine `interrupt`, and do
+  not change the omitted-mode default from `steer`.
+- During model generation, cancel only the active provider/model request.
+  Preserve completed tool work and display-safe partial assistant output, add
+  the correction as real user intent, and continue the same logical turn.
+- Never persist incomplete provider-signed, encrypted, or otherwise
+  replay-sensitive reasoning blocks as a redirect checkpoint.
+- During tool execution or a concurrent tool batch, do not cancel tools merely
+  because ordinary input arrived. Consume the correction once at the next
+  defined safe boundary.
+- Give each active operation a generation and each accepted input an
+  idempotency key plus deterministic sequence. A stale provider callback or
+  stale finalizer cannot publish after ownership changes.
+- Use the existing SQLite ingress-queue abstraction for accepted redirect
+  intent. One operation generation claims the row, and the row remains
+  incomplete until the owning attempt adopts the correction at a transcript
+  barrier.
+- If the Gateway exits before adoption, stale-claim recovery must deliver the
+  correction exactly once. If the original operation no longer exists, convert
+  it into one queued recovery/follow-up turn; do not pretend to resume the dead
+  logical turn.
+- On completion, remove correction text from the queue row and retain only
+  bounded non-sensitive tombstone metadata. Do not keep a second indefinite
+  copy outside the transcript.
+- Route true mid-run steering through the target's active run queue.
+- Deliver STOP through direct cancellation control when a run is active; do
+  not create another model turn merely to cancel it.
+- Queue post-completion follow-ups behind a terminal transcript/finalization
+  barrier.
+- Preserve ordering and idempotency for concurrent trusted sends.
+- Keep the takeover fence strict for unknown appenders, non-append mutation,
+  truncation, and stale ownership.
+- Do not globally ignore file changes or classify every append as trusted.
+- Keep Discord native command production routing unchanged unless a
+  deterministic canonical-target test fails against current source.
+- Prove how TUI `chat.send` resolves queue policy before documenting or setting
+  a `webchat` override. Prefer the explicit global
+  `messages.queue.mode=redirect` for this installation when Discord and TUI
+  should share behavior.
+- Before configuring redirect, enumerate inline and persisted session
+  `queueMode` values. Preserve the resolution order: inline, persisted session,
+  channel override, global mode, then `steer`.
+
+The fix must prevent duplicate model turns, duplicate tool side effects,
+duplicate or stale final announcements, and transcript reordering. Persistence
+latency may widen the race, but the lifecycle fix must work against the current
+file-backed store.
+
+Implementation order within Batch 1:
+
+1. deterministic failing incident and lifecycle tests;
+2. model-request-only redirect primitive;
+3. operation-owned redirect state machine;
+4. durable accepted-intent adoption and crash recovery;
+5. persistent `sessions_send` ownership repair;
+6. Discord and TUI integration;
+7. additive config, schema, help, and docs support;
+8. explicit installation config only after validation.
+
+Use separate commits for these boundaries where the intermediate tree remains
+buildable and reviewable.
+
+### Batch 2: Stateless context recovery and Lossless Claw deployment
+
+Lossless Claw statelessness means that matching subagent messages are not
+persisted or ingested into LCM. It must not disable native OpenClaw compaction.
+
+Required design:
+
+- Keep `tokenBudget` as full model/runtime capacity.
+- Keep `targetPromptTokens` as the host recovery convergence boundary.
+- Add a typed, optional context-engine result/disposition for explicit runtime
+  fallback authorization. Do not infer behavior from the string
+  `stateless session`.
+- Delegate stateless compaction to OpenClaw's direct native compactor without
+  ingesting the session into LCM.
+- Carry `targetPromptTokens`, estimate provenance, aggregate tool pressure,
+  cancellation, reassembly, and complete-prompt estimation through fallback.
+- Keep the final no-progress decision in OpenClaw after reassembly. A context
+  engine must not declare complete-prompt no progress unless it owns that full
+  accounting domain.
+- Prove the direct delegate cannot recurse through context-engine selection.
+- Keep older third-party context engines compatible when they do not return the
+  new optional disposition.
+- Preserve the successful stateful `284388 -> compact -> retry` incident as a
+  positive control.
+
+Deploy LCM from a clean dedicated checkout pinned to the committed `shariq`
+revision. The active source, tests, built artifact, and runtime fingerprint must
+identify the same immutable commit. Do not maintain production as an
+uncommitted patch or mutable development checkout.
+
+### Batch 3: Capability-aware exec host schema
+
+The current model-facing schema advertises `sandbox` and `node` even when those
+hosts are unavailable to the session. Runtime rejection remains necessary, but
+the model should not be encouraged to select an impossible host.
+
+Required design:
+
+- Build the model-facing host enum from a prepared session capability snapshot.
+- Advertise `sandbox` only when a sandbox runtime exists and policy permits it.
+- Advertise `node` only when configured policy and an eligible connected-node
+  snapshot permit it.
+- Preserve `auto` and permitted Gateway behavior.
+- Rebuild capabilities at the normal tool/schema lifecycle boundary rather
+  than polling metadata from the exec hot path.
+- Keep runtime validation authoritative when capability changes after schema
+  creation.
+- Never reinterpret unavailable `host=sandbox` as Gateway execution.
+- Preserve direct/internal API compatibility for callers that bypass the
+  model-facing schema; explicit unavailable requests still fail safely.
+
+### Rebase-skill maintenance
+
+Every implemented fork-only behavior becomes part of the maintained patch
+stack. Updating source without updating the global rebase skill creates a
+future regression risk because a later stable-release rebase may silently omit
+or partially adapt the patch.
+
+After the final commits and build/deployment behavior are known, update:
+
+- `$CODEX_HOME/skills/openclaw-rebase/SKILL.md`
+- its Lossless Claw maintenance reference
+- any directly owned helper or template whose commands became stale
+
+The skill update must:
+
+- record the new stable base and exact ordered OpenClaw and LCM commit lists;
+- add each new patch's problem, intent, owning files, protected invariants, and
+  focused regression tests;
+- identify paired OpenClaw/LCM contracts that must be rebased, tested, built,
+  deployed, and pushed together;
+- update every `git show`, cherry-pick, range-diff, build, install, parity,
+  canary, health, and push step affected by the work;
+- require full source and test proof before classifying a patch as superseded
+  upstream;
+- require one explicit disposition for every old patch: preserved exactly,
+  adapted to upstream structure, superseded with equivalent upstream behavior,
+  or intentionally dropped with Shariq's approval;
+- protect behavior rather than old file locations when upstream refactors;
+- preserve additive `redirect`, the unchanged `steer` default, model-only
+  cancellation, durable adoption, persistent `sessions_send` ownership, and
+  strict takeover detection;
+- include the committed performance benchmark as future before/after rebase
+  proof for any retained persistence patch;
+- preserve stable-release-only rebases and final `shariq` branches for both
+  maintained forks;
+- exclude temporary runtime facts such as PIDs, one-off session ids, current
+  queue depth, and transient health output.
+
+The skill is not complete if it merely appends commit hashes. Its workflow must
+make accidental loss of `/new`, native Pi/OpenClaw ChatGPT behavior, context
+recovery, active-turn redirect, steering ownership, exec-host capability
+filtering, or approved persistence behavior detectable before deployment.
+
+### Provider and network failures
+
+Do not change retry or fallback behavior in this program. Current evidence
+shows bounded classification and later recovery without configuration changes,
+which is consistent with external provider failures. A retry change requires
+separate proof of a local defect and replay safety after possible tool side
+effects.
 
 ## Problem
 
@@ -181,7 +417,9 @@ reports current state separately from target state.
 ## Benchmark Method
 
 All exploratory benchmark code and fixtures were created under `/tmp` and were
-removed or left outside the repository. The benchmark:
+removed or left outside the repository. The results below are historical
+diagnostic evidence, not permanent regression proof and not an independently
+reproducible acceptance result. The exploratory benchmark:
 
 - used the checked-out source implementation as an authoritative baseline;
 - matched the live 10 MiB session store and 10 MiB trajectory-window sizes;
@@ -201,9 +439,10 @@ Two baseline forms were retained:
 2. A synthetic current-algorithm control inside the same harness as all
    alternatives, allowing fair relative comparisons.
 
-Short microbenchmarks do not predict every production latency tail. They
-identify dominant allocation, serialization, and event-loop behavior. A longer
-repo-native soak is required before deployment.
+Phase 0 must add the missing repository-owned fixture and run it repeatedly in
+an isolated standalone environment. Short microbenchmarks do not predict every
+production latency tail. They identify dominant allocation, serialization, and
+event-loop behavior. A longer isolated soak is required before deployment.
 
 ## Benchmark Proof
 
@@ -494,7 +733,141 @@ If tagged releases prove that arbitrary runtime store paths are a required
 public contract, the implementation must define a database-path mapping or
 deprecation window before removing them.
 
-## Implementation Phases
+## Correctness Implementation Batches
+
+Each batch is a separate commit and rollback point. Batch 1 must pass before
+Batch 2, and Batch 2 before Batch 3. Do not combine these fixes with trajectory
+or session-storage changes.
+
+### Batch 1 implementation surface
+
+Expected OpenClaw surfaces:
+
+- `packages/agent-core/src/agent.ts`
+- `packages/agent-core/src/agent-loop.ts`
+- `src/auto-reply/reply/queue/types.ts`
+- `src/auto-reply/reply/queue-policy.ts`
+- `src/auto-reply/reply/get-reply-run.ts`
+- `src/auto-reply/reply/agent-runner.ts`
+- `src/auto-reply/reply/reply-run-registry.ts`
+- a narrow active-turn intent owner using the existing
+  `src/channels/message/ingress-queue.ts` abstraction
+- `src/agents/tools/sessions-send-tool.ts`
+- `src/agents/embedded-agent-runner/runs.ts`
+- `src/agents/embedded-agent-runner/run/attempt.ts`
+- `src/agents/embedded-agent-runner/run/attempt.queue-message.ts`
+- `src/agents/embedded-agent-runner/run/attempt.session-lock.ts`
+- Discord and TUI integration surfaces only where failing tests require them
+- queue config types, schema, help, and docs
+- subagent cancellation, announcement, and lane-owner helpers only where the
+  traced lifecycle requires them
+- focused session-send, active-run queue, and session-lock tests
+
+Exit criteria:
+
+- `redirect` is additive and omitted mode still resolves to `steer`;
+- model-generation redirect cancels only the provider request and continues the
+  same logical turn;
+- tool execution and concurrent batches complete once before correction
+  adoption;
+- completed tool results and display-safe partial output are retained exactly
+  once;
+- multiple corrections retain deterministic order and idempotency;
+- finalization races produce either one redirect before commit or exactly one
+  follow-up after commit;
+- accepted intent remains recoverable until transcript adoption, and completed
+  rows retain no correction text;
+- both captured duplicate-final/takeover timelines fail before the fix and pass
+  afterward;
+- steering reaches an active persistent subagent without starting a competing
+  turn;
+- cancellation during a tool run uses control cancellation and cannot start a
+  duplicate model turn;
+- post-completion follow-up waits for terminal transcript publication;
+- two trusted sends preserve order and do not duplicate work;
+- unknown append, mutation, and truncation still raise takeover;
+- restart or abort cannot replay queued steering or stale announcements.
+- TUI queue-surface resolution is proven rather than assumed;
+- Discord canonical target routing passes; production routing is unchanged if
+  the test was already green;
+- intentional inline or persisted session queue modes retain precedence over
+  the eventual global installation setting.
+
+### Batch 2 implementation surface
+
+Expected OpenClaw surfaces:
+
+- `src/context-engine/types.ts`
+- `src/context-engine/delegate.ts`
+- `src/agents/embedded-agent-runner/run.ts`
+- focused context-engine delegation and overflow-recovery tests
+
+Expected Lossless Claw surfaces:
+
+- `src/engine.ts`
+- context-engine contract types only where the plugin exposes them
+- lifecycle and engine-compaction tests
+- regenerated `dist/index.js` and package artifacts required by its build
+
+Exit criteria:
+
+- stateful LCM recovery preserves `284388 -> compact -> retry`;
+- a stateless subagent delegates to native compaction without creating LCM
+  persistence;
+- native fallback converges against `targetPromptTokens`;
+- complete-prompt no-progress is decided after OpenClaw reassembly;
+- cancellation and no-progress terminate without retry loops;
+- older engines without the optional disposition preserve current behavior;
+- the active LCM checkout is clean, pinned to the committed fork revision, and
+  source/test/dist/runtime parity is verified.
+
+### Batch 3 implementation surface
+
+Expected OpenClaw surfaces:
+
+- `src/agents/bash-tools.schemas.ts`
+- eager and lazy exec-tool construction paths
+- the prepared attempt/session capability shape that owns exec-host facts
+- focused schema and runtime-enforcement tests
+
+Exit criteria:
+
+- unavailable sandbox and node hosts are absent from the model-facing schema;
+- available hosts remain selectable;
+- session overrides and policy restrictions are reflected at schema creation;
+- a capability disappearing after schema creation still fails safely at
+  execution;
+- explicit unavailable sandbox execution never falls through to Gateway
+  execution;
+- schema caching or config reload cannot retain capabilities beyond its owning
+  lifecycle.
+
+### Global rebase-skill closeout
+
+Expected global surfaces:
+
+- `$CODEX_HOME/skills/openclaw-rebase/SKILL.md`
+- `$CODEX_HOME/skills/openclaw-rebase/references/lcm-maintenance.md`
+- existing skill scripts or templates only if their commands no longer match
+  the verified workflow
+
+Exit criteria:
+
+- OpenClaw and LCM patch lists exactly match their final `shariq` histories;
+- every new local behavior has a named regression test and upstream-absorption
+  proof rule;
+- paired context-engine commits cannot be replayed or dropped independently;
+- new benchmark, worker, migration, backup, clean-deployment, and soak gates
+  appear in the appropriate future rebase steps;
+- skill build/install/start/health/canary/push commands match the workflow
+  proven during this implementation;
+- a readback audit finds no stale base, commit, path, command, or contradictory
+  instruction.
+
+## Performance Implementation Phases
+
+The performance phases begin only after Batches 1-3 have landed and passed
+their own regression proof.
 
 ### Phase 0: Convert proof into repository-owned regression coverage
 
@@ -504,11 +877,15 @@ deprecation window before removing them.
    - a 10 MiB trajectory window;
    - 16 concurrent logical agents.
 2. Preserve the current implementation as the benchmark control.
-3. Record event-loop p99/max, heartbeat p99/max, heap/RSS deltas, bytes written,
-   and throughput.
+3. Record event-loop p99/max, heartbeat p99/max, heap/RSS deltas, logical and
+   filesystem/block bytes written, fsync latency, and throughput.
 4. Run at least five repetitions and report median and worst observed result.
-5. Keep performance thresholds broad enough for CI variance while asserting
+5. Run the benchmark in an isolated standalone checkout/environment that cannot
+   access production state.
+6. Keep performance thresholds broad enough for CI variance while asserting
    that the optimized path does not perform whole-store writes.
+7. Capture worker queue bytes/wait time where applicable and SQLite transaction
+   latency, WAL growth, and checkpoint duration for SQLite candidates.
 
 Expected files:
 
@@ -518,6 +895,9 @@ Expected files:
 - no committed live data or `/tmp` artifacts.
 
 ### Phase 1: Offload trajectory rolling-window maintenance
+
+Phase 1 starts only if Phase 0 reproduces the qualitative ranking and confirms
+trajectory work is a material contributor under the representative fixture.
 
 1. Define a narrow typed job/result protocol.
 2. Add one lazy worker with bounded queue accounting.
@@ -545,9 +925,29 @@ Exit criteria:
 - bounded queue memory;
 - clean worker teardown;
 - no trajectory export or cleanup regression;
-- mixed-workload heartbeat p99 materially below the current baseline.
+- mixed-workload heartbeat p99 materially below the current baseline;
+- filesystem write volume and fsync behavior are no worse than the baseline;
+- post-Phase-1 measurements are sufficient to decide whether Phase 2 remains
+  justified.
 
 ### Phase 2: Move session metadata to per-agent SQLite rows
+
+Phase 2 is approved as the target architecture, not yet for activation. Before
+implementation or production migration:
+
+1. Complete a repository-wide search for direct `sessions.json` consumers,
+   including plugins, packages, CLI paths, and Lossless Claw.
+2. Rehearse migration using copies of the production-scale session store and
+   each affected per-agent database.
+3. Prove entry-count equality and sampled canonical-entry hash equality.
+4. Prove concurrent CLI/Gateway writer behavior, alias promotion, and
+   lost-update handling.
+5. Produce and validate a SQLite-to-JSON rollback export before production
+   migration.
+6. Confirm Phase 1 measurements still identify whole-store session writes as a
+   material remaining bottleneck.
+
+Only after those gates pass:
 
 1. Add `session_entries` and required indexes to the per-agent schema.
 2. Regenerate Kysely types.
@@ -589,6 +989,9 @@ Expected consumer audit:
 
 Exit criteria:
 
+- the complete direct-consumer audit has no unresolved runtime file readers;
+- migration rehearsal passes against production-scale copies;
+- imported entry counts and sampled hashes match;
 - no normal runtime read or write of `sessions.json`;
 - no lost update under concurrent patches;
 - no runtime dual-write or JSON fallback;
@@ -600,15 +1003,82 @@ Exit criteria:
 ### Phase 3: Reassess scheduling after storage work
 
 1. Run a 30-minute workload with 15-16 agents, cron jobs, and parallel
-   subagents.
+   subagents as the initial gate.
 2. Capture event-loop, CPU, heap, RSS, queue depth, SQLite transaction latency,
-   WAL size, and worker queue metrics.
+   WAL size/growth, checkpoint latency, filesystem/block writes, fsync latency,
+   and worker queue bytes/wait time.
 3. Compare against the same current-code workload.
-4. Implement bounded CPU/persistence pressure control only if the Gateway
+4. Run a longer isolated standalone soak, followed by a quiet production soak
+   with automation and concurrency controlled.
+5. Return to normal concurrency and automation only after both soaks remain
+   healthy and bounded.
+6. Implement bounded CPU/persistence pressure control only if the Gateway
    remains degraded.
-5. Do not lower production concurrency merely to make the acceptance test pass.
+7. Do not lower production concurrency merely to make the acceptance test pass.
 
 ## Required Tests
+
+### Active-turn redirect and persistent-subagent ownership
+
+- Omitted queue mode remains `steer`; explicit `redirect` selects the new path.
+- Model request active: ordinary Discord input cancels only that request and
+  continues the same logical turn with the correction.
+- Tool active: the tool completes once, then the correction is presented before
+  the next model decision.
+- Concurrent tool batch: correction is consumed once at the defined batch
+  boundary.
+- Two or more corrections preserve order and are consumed exactly once.
+- Finalization race: redirect wins before terminal commit or exactly one
+  follow-up starts after commit.
+- Display-safe partial assistant text is retained; incomplete signed/encrypted
+  reasoning is not replayed.
+- Explicit `/steer`, `/stop`, and queued follow-up semantics remain distinct.
+- Reproduce both captured duplicate-final/takeover timelines with deterministic
+  barriers rather than timing sleeps.
+- Steering while the prompt lock is released joins the active run.
+- Cancellation while a tool is running aborts without a competing turn.
+- Follow-up during finalization waits for terminal publication.
+- Two concurrent trusted sends preserve order and idempotency.
+- Late or duplicate announcement delivery cannot republish a stale final.
+- Unknown external append remains a hard takeover.
+- Non-append mutation and truncation remain hard takeovers.
+- Gateway restart or run abort cannot replay or lose queued steering silently.
+- A redirect claimed by an operation but not adopted before process exit is
+  reclaimed exactly once.
+- A recovered intent whose original generation is gone becomes exactly one
+  follow-up.
+- Completed intent tombstones contain no correction payload.
+- TUI `chat.send` queue-policy routing is proven.
+- Discord `/steer` targets the canonical Discord session rather than slash
+  storage; if this already passes, no speculative adapter patch is made.
+- Images, attachments, and unsupported media follow the chosen safe follow-up
+  path.
+- Existing `interrupt`, `steer`, `followup`, and `collect` tests remain green.
+
+### Stateless context recovery
+
+- Stateful LCM recovery replays `284388 -> compact below boundary -> retry`.
+- Stateless subagent fallback compacts natively and continues without LCM
+  ingestion.
+- Native fallback receives `targetPromptTokens` and complete estimate
+  provenance.
+- Aggregate tool pressure can invoke compaction when no individual result is
+  truncatable.
+- OpenClaw reassembles and makes the final no-progress decision.
+- No native fallback returns a bounded internal-subagent failure without
+  suggesting `/new`.
+- Cancellation during delegated compaction stops cleanly.
+- Direct delegation cannot recurse into the same context engine.
+- Third-party engines without the optional disposition remain compatible.
+
+### Exec host capabilities
+
+- No sandbox runtime means `sandbox` is absent from the model-facing enum.
+- No eligible connected node means `node` is absent.
+- Available sandbox, node, and Gateway hosts remain usable when policy permits.
+- Session-level overrides produce the correct capability snapshot.
+- Capability loss after schema creation is rejected at execution.
+- Explicit disallowed or unavailable requests fail without host substitution.
 
 ### Trajectory worker
 
@@ -651,8 +1121,12 @@ Exit criteria:
 - Successful import records migration provenance.
 - Rollback export round-trips current rows to valid JSON.
 - Custom store migration follows the approved compatibility rule.
-- Backup and restore include the per-agent database and omit live WAL/SHM
-  sidecars correctly.
+- Backup and restore use SQLite's backup mechanism or a verified checkpointed
+  offline copy; they never assume the main database file alone contains every
+  committed transaction.
+- Restored databases pass row-count checks and `PRAGMA integrity_check`.
+- Backup proof records WAL/checkpoint state and demonstrates restoration from
+  the produced artifact.
 
 ### Runtime integrations
 
@@ -678,8 +1152,11 @@ Exit criteria:
 - Heartbeat p99 target: below 10 ms during the storage fixture.
 - Peak heap growth is at least 75% lower than the current mixed baseline.
 - Logical session write volume scales with changed-row size.
+- Filesystem/block writes materially improve with logical write volume.
+- Fsync latency, SQLite transaction latency, WAL growth, checkpoint duration,
+  and worker queue wait/bytes remain bounded.
 - Worker count never exceeds one.
-- No monotonic heap/RSS growth during a 30-minute soak.
+- No monotonic heap/RSS growth during the initial or extended soak.
 - No health or session-history timeout during the soak.
 - No infinite retry, worker restart, or SQLite busy loop.
 
@@ -687,49 +1164,106 @@ Exit criteria:
 
 Run the narrowest proof first, then broaden:
 
-1. Focused trajectory worker tests.
-2. Focused session accessor and SQLite row tests.
-3. Doctor migration and rollback round-trip tests.
-4. Plugin SDK session-store tests.
-5. PI embedded runner, session lifecycle, cron, subagent, and Discord tests.
-6. Lossless Claw automatic/manual compaction integration.
-7. Database schema generation and Kysely guards.
-8. Import-cycle, formatting, lint, and changed typecheck lanes.
-9. Full build because worker packaging and generated database types change.
-10. Repeated 16-agent benchmark.
-11. 30-minute isolated Gateway soak.
-12. Fresh mandatory autoreview until no actionable findings remain.
+1. Deterministic redirect, finalization, TUI/Discord routing, and both
+   persistent-subagent takeover incident replays.
+2. Model-request-only cancellation, tool-boundary redirect, durable adoption,
+   stale-claim recovery, session-lock, announcement, and restart concurrency
+   tests.
+3. Verify omitted mode remains `steer`, explicit `redirect` works, and
+   per-session override precedence is unchanged.
+4. OpenClaw context-engine delegation and overflow-recovery tests.
+5. Lossless Claw stateful/stateless compaction and lifecycle tests.
+6. Capability-aware exec schema and runtime-enforcement tests.
+7. Build and package OpenClaw and Lossless Claw; verify clean source/dist
+   provenance.
+8. Run the repository-owned Phase 0 benchmark at least five times.
+9. Focused trajectory worker tests after Phase 0 authorizes Phase 1.
+10. Rerun isolated and mixed benchmarks after Phase 1.
+11. Perform the direct-consumer audit and migration rehearsal before Phase 2.
+12. Focused session accessor and SQLite row tests.
+13. Doctor migration and rollback round-trip tests.
+14. Plugin SDK session-store tests.
+15. PI embedded runner, session lifecycle, cron, subagent, and Discord tests.
+16. Database schema generation and Kysely guards.
+17. Import-cycle, formatting, lint, and changed typecheck lanes.
+18. Full build because worker packaging and generated database types change.
+19. Repeated 16-agent benchmark.
+20. 30-minute isolated Gateway soak.
+21. Longer isolated standalone soak.
+22. Quiet production soak with controlled automation.
+23. Refresh and audit the global `openclaw-rebase` skill against the final
+    OpenClaw and LCM commit histories and proven deployment workflow.
+24. Fresh mandatory autoreview for each implementation batch until no
+    actionable findings remain.
 
-The implementation work must use the repository's remote Testbox/Crabbox
-validation workflow. The `/tmp` benchmark is diagnostic evidence only.
+The implementation work must not use OpenClaw repo-local skills, Crabbox, or
+Testbox. Use direct repository commands and isolated local/standalone
+environments. The historical `/tmp` benchmark is diagnostic evidence only; the
+new committed benchmark is the reproducible source of truth.
 
 ## Deployment Plan
 
-No production deployment occurs until all phase exit criteria pass.
+No production deployment occurs until the applicable batch or phase exit
+criteria pass. Batches 1-3 may deploy before the conditional persistence
+phases, but each deployment must retain a clean rollback point.
 
 1. Stop the Gateway cleanly.
-2. Verify no active run or maintenance operation remains.
-3. Back up:
+2. Stop or freeze the LCM completion watcher, janitor, and every helper capable
+   of mutating session or LCM state.
+3. Verify no Gateway, OpenClaw helper, LCM helper, active run, or maintenance
+   writer remains.
+4. Back up:
    - OpenClaw config;
    - every agent's `sessions.json`;
    - every agent database;
    - Lossless Claw database;
    - relevant transcript and trajectory directories.
-4. Validate backup integrity before migration.
-5. Install the built `shariq` branch.
-6. Run the explicit doctor migration.
-7. Verify row counts, sampled entry hashes, migration provenance, and SQLite
-   integrity.
-8. Keep migrated JSON files as inactive backups; do not let runtime read them.
-9. Start the Gateway.
-10. Wait at least 30 seconds.
-11. Run `openclaw health`.
-12. Verify a Discord message round trip.
-13. Verify `/new`.
-14. Verify manual `/compact` and an LCM-backed continuation.
-15. Verify cron and subagent execution.
-16. Observe event-loop, CPU, RSS, heap, worker queue, WAL, and LCM metrics during
-    normal load.
+5. Back up SQLite databases through SQLite's backup mechanism or from a
+   verified checkpointed offline state. Do not copy only the main database file
+   while committed transactions may remain in WAL.
+6. Validate backup restoration, row counts, WAL/checkpoint state, and
+   `PRAGMA integrity_check` before migration.
+7. Enumerate inline and persisted session queue-mode overrides and record their
+   precedence without changing them.
+8. Install the built OpenClaw `shariq` branch.
+9. Deploy Lossless Claw from a clean dedicated checkout pinned to its committed
+   `shariq` revision; verify source, tests, dist, plugin metadata, and commit
+   provenance agree.
+10. Run the explicit doctor migration only when deploying authorized Phase 2.
+11. Verify row counts, sampled entry hashes, migration provenance, and SQLite
+    integrity.
+12. Produce and validate the current SQLite-to-JSON rollback export before the
+    migrated runtime accepts production writes.
+13. Keep migrated JSON files as inactive backups; do not let runtime read them.
+14. After code and config validation, explicitly set this installation's
+    global `messages.queue.mode` to `redirect`. Do not add a `webchat` override
+    unless the TUI routing test proves that surface.
+15. Start the Gateway through the OpenClaw Gateway CLI unless that command
+    fails and the fallback is recorded.
+16. Wait at least 30 seconds.
+17. Run `openclaw health`.
+18. Verify an ordinary Discord correction during model generation redirects
+    the same logical turn, and a correction during tool execution waits for a
+    safe boundary.
+19. Verify the interactive TUI follows the same global redirect policy.
+20. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
+21. Verify a Discord message round trip.
+22. Verify `/new`.
+23. Verify manual `/compact`, stateful automatic recovery, and stateless
+    subagent native fallback.
+24. Verify active-subagent steering, cancellation, follow-up-after-finalization,
+    and absence of duplicate finals or takeover errors.
+25. Verify the exec schema advertises only live session capabilities and that
+    explicit unavailable hosts still fail safely.
+26. Verify existing sessions, cron delivery, subagent execution, restart
+    recovery, and absence of runtime JSON fallback.
+27. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
+    block-write, and LCM metrics during normal load.
+28. Resume frozen helpers only after Gateway, Discord, plugin parity, context,
+    steering, and exec-host canaries pass.
+29. Update the global rebase skill with final commit hashes and any durable
+    workflow facts learned from deployment, then verify its complete readback
+    before final handoff.
 
 Gateway restart alone is enough for new runtime code to load. Existing
 sessions should continue after migration; `/new` must not be required as an
@@ -742,18 +1276,32 @@ Do not rely on the pre-migration JSON backup after new SQLite writes occur.
 Rollback requires:
 
 1. Stop the Gateway.
-2. Run the offline SQLite-to-JSON rollback export.
-3. Verify exported entry count and sampled hashes.
-4. Restore the previous OpenClaw build.
-5. Restore any config key migrated by doctor.
-6. Start the Gateway.
-7. Wait 30 seconds and run health plus Discord, `/new`, and LCM checks.
+2. Freeze the same helper writers used during deployment.
+3. Run the offline SQLite-to-JSON rollback export.
+4. Verify exported entry count and sampled hashes.
+5. Restore the previous OpenClaw build.
+6. Restore any config key migrated by doctor.
+7. Start the Gateway.
+8. Wait 30 seconds and run health plus Discord, `/new`, and LCM checks.
+9. Resume helpers only after rollback canaries pass.
 
 Lossless Claw's database and transcript files are not migrated by Phase 2 and
 should not require conversion.
 
 Rollback immediately if:
 
+- redirect aborts a running tool, starts a competing turn, loses accepted
+  intent, duplicates a correction, or publishes a stale provider/finalizer
+  result;
+- omitted queue mode no longer defaults to `steer`, or existing explicit
+  session modes lose precedence;
+- persistent-subagent steering duplicates a turn, tool effect, or final;
+- expected trusted steering still produces a takeover;
+- unknown transcript mutation no longer produces a takeover;
+- stateless compaction cannot reach native fallback or loops recursively;
+- stateful LCM recovery regresses;
+- active LCM source/dist/runtime provenance is not clean and consistent;
+- the exec schema advertises unavailable hosts or weakens sandbox isolation;
 - SQLite integrity fails;
 - session rows disappear or lose fields;
 - `/new`, `/compact`, or PI turns regress;
@@ -791,6 +1339,30 @@ Risk controls:
 
 This plan is complete only when:
 
+- explicit `redirect` provides model-request-only cancellation and same-turn
+  continuation while omitted mode remains `steer`;
+- durable corrections are adopted exactly once, recovered as one follow-up
+  after a crash when their operation is gone, and removed from completed queue
+  payloads;
+- Discord and TUI behavior is proven without guessing their queue surface;
+- persistent-subagent steering, cancellation, and post-finalization follow-up
+  have one lifecycle owner and do not duplicate turns, tools, or finals;
+- the takeover fence still rejects unknown appenders, mutation, and truncation;
+- stateless subagents can compact through target-aware native fallback without
+  LCM persistence;
+- stateful LCM overflow recovery remains successful;
+- Lossless Claw production artifacts identify a clean committed fork revision;
+- exec schemas advertise only session-available hosts while runtime enforcement
+  remains authoritative;
+- provider/network retry behavior remains unchanged unless separately proven
+  defective;
+- the Phase 0 benchmark is committed and reproducible in the isolated
+  standalone validation environment;
+- Phase 1 measurements reproduce a material trajectory-worker improvement;
+- Phase 2 is activated only after its consumer, migration, and rollback gates;
+- the global `openclaw-rebase` skill and LCM maintenance reference identify
+  every retained fork patch, its behavior, tests, replay order, and
+  upstream-absorption proof;
 - session metadata uses SQLite rows in normal runtime;
 - one worker owns trajectory rolling-window maintenance;
 - `sessions.json` is migration/import/export only;
