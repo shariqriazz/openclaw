@@ -3,6 +3,7 @@
  */
 import fs from "node:fs/promises";
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { ensureSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { MAX_IMAGE_BYTES } from "@openclaw/media-core/constants";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
@@ -19,6 +20,7 @@ import {
   updateSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
 import { resolveQuotaSuspensionEntryMaintenance } from "../../../config/sessions/store-maintenance.js";
+import { serializeJsonlLine } from "../../../config/sessions/transcript-jsonl.js";
 import {
   bindOwnedSessionTranscriptWrites,
   type OwnedSessionTranscriptCacheSnapshot,
@@ -2203,19 +2205,32 @@ export async function runEmbeddedAttempt(
         }
         sessionManager.setSessionFile(params.sessionFile);
       },
+      recognizeAttemptOwnedSessionEntries: (entries) => {
+        if (!sessionManager) {
+          return false;
+        }
+        const activeSessionManager = sessionManager;
+        return entries.every((entry) => {
+          if (entry.type !== "message") {
+            return false;
+          }
+          const activeEntry = activeSessionManager.getEntry(entry.id);
+          return (
+            activeEntry?.type === "message" &&
+            (isDeepStrictEqual(activeEntry, entry) ||
+              serializeJsonlLine(activeEntry) === serializeJsonlLine(entry))
+          );
+        });
+      },
     });
     releaseRetainedSessionLock = () => sessionLockController.dispose();
     const ownedTranscriptWriteContext = {
       sessionFile: params.sessionFile,
       sessionKey: params.sessionKey,
       canAdvanceSessionEntryCache: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-        sessionLockController.canAdvanceSessionEntryCache(snapshot, {
-          allowAttemptOwnedAppend: true,
-        }),
+        sessionLockController.canAdvanceSessionEntryCache(snapshot),
       publishSessionFileSnapshot: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-        sessionLockController.publishOwnedSessionFileSnapshot(snapshot, {
-          allowAttemptOwnedAppend: true,
-        }),
+        sessionLockController.publishOwnedSessionFileSnapshot(snapshot),
       withSessionWriteLock: <T>(
         operation: () => Promise<T> | T,
         options?: OwnedSessionTranscriptWriteOptions<T>,
@@ -4684,13 +4699,9 @@ export async function runEmbeddedAttempt(
               withSessionWriteLock: (run, options) =>
                 sessionLockController.withSessionWriteLock(run, options),
               canAdvanceSessionEntryCache: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-                sessionLockController.canAdvanceSessionEntryCache(snapshot, {
-                  allowAttemptOwnedAppend: true,
-                }),
+                sessionLockController.canAdvanceSessionEntryCache(snapshot),
               publishSessionFileSnapshot: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-                sessionLockController.publishOwnedSessionFileSnapshot(snapshot, {
-                  allowAttemptOwnedAppend: true,
-                }),
+                sessionLockController.publishOwnedSessionFileSnapshot(snapshot),
             });
           }
 

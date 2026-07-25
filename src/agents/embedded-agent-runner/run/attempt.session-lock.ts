@@ -812,8 +812,10 @@ async function classifySessionFenceChange(params: {
   previous: SessionFileFenceSnapshot | undefined;
   current: SessionFileFingerprint;
   expectedPublishedEntries?: readonly OwnedSessionTranscriptPublishedEntry[];
+  allowAnyMessage?: boolean;
 }): Promise<PromptReleasedSessionChange | undefined> {
-  const allowAnyMessage = params.expectedPublishedEntries !== undefined;
+  const allowAnyMessage =
+    params.allowAnyMessage === true || params.expectedPublishedEntries !== undefined;
   return (
     (params.expectedPublishedEntries
       ? await classifyOwnedSessionFileInitialization({
@@ -1151,19 +1153,9 @@ export class EmbeddedAttemptSessionTakeoverError extends Error {
   }
 }
 
-type OwnedSessionSnapshotAuthorization = {
-  allowAttemptOwnedAppend?: boolean;
-};
-
 export type EmbeddedAttemptSessionLockController = {
-  canAdvanceSessionEntryCache(
-    snapshot: OwnedSessionTranscriptCacheSnapshot,
-    options?: OwnedSessionSnapshotAuthorization,
-  ): boolean;
-  publishOwnedSessionFileSnapshot(
-    snapshot: OwnedSessionTranscriptCacheSnapshot,
-    options?: OwnedSessionSnapshotAuthorization,
-  ): boolean;
+  canAdvanceSessionEntryCache(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
+  publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
   publishValidatedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
   readTrustedCurrentSessionFileSnapshot(): Promise<TrustedSessionFileSnapshot | undefined>;
   releaseForPrompt(): Promise<void>;
@@ -1192,6 +1184,9 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     entries: readonly PromptReleasedSessionEntry[],
   ) => Promise<PromptReleasedSessionMergeResult | void> | PromptReleasedSessionMergeResult | void;
   reloadPromptReleasedSessionFile?: () => Promise<void> | void;
+  recognizeAttemptOwnedSessionEntries?: (
+    entries: readonly PromptReleasedSessionEntry[],
+  ) => Promise<boolean> | boolean;
 }): Promise<EmbeddedAttemptSessionLockController> {
   const acquireLock = async (signal?: AbortSignal): Promise<SessionLock> =>
     await params.acquireSessionWriteLock({
@@ -1542,6 +1537,33 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         ),
       );
       return;
+    }
+
+    // A Pi listener may finish a valid message append immediately before the
+    // next provider request releases the lock. Recover only entries already
+    // present byte-for-byte in this attempt's SessionManager.
+    if (params.recognizeAttemptOwnedSessionEntries) {
+      const attemptOwnedChange = await classifySessionFenceChange({
+        sessionFile: params.lockOptions.sessionFile,
+        previous: fenceSnapshot,
+        current,
+        allowAnyMessage: true,
+      });
+      if (
+        attemptOwnedChange &&
+        (await params.recognizeAttemptOwnedSessionEntries(attemptOwnedChange.entries))
+      ) {
+        fenceSnapshot = await readSessionFileFenceSnapshot(params.lockOptions.sessionFile);
+        fenceFingerprint = fenceSnapshot.fingerprint;
+        setFenceGeneration(
+          recordOwnedSessionFileWrite(
+            sessionFileFenceKey,
+            fenceSnapshot.fingerprint,
+            attemptOwnedChange.publishedEntries,
+          ),
+        );
+        return;
+      }
     }
 
     takeoverDetected = true;
@@ -1951,28 +1973,10 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     return await runWithPhysicalWriteLockScope(runLockedOperation, () => lock.release());
   }
 
-  function hasAuthorizedAttemptAppend(
-    options: OwnedSessionSnapshotAuthorization | undefined,
-  ): boolean {
-    // Attempt-bound Pi callbacks can outlive a provider stream. Keep their
-    // exact appends owned across retained-lock and prompt-released phases only.
-    return (
-      options?.allowAttemptOwnedAppend === true &&
-      !disposed &&
-      !cleanupStarted &&
-      !heldLockDraining &&
-      (Boolean(heldLock) || fenceActive)
-    );
-  }
-
   return {
-    canAdvanceSessionEntryCache(
-      snapshot: OwnedSessionTranscriptCacheSnapshot,
-      options?: OwnedSessionSnapshotAuthorization,
-    ): boolean {
+    canAdvanceSessionEntryCache(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean {
       const state = activeWriteLock.getStore();
-      const hasActiveWriteScope = state?.active === true && state.scope.active;
-      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedAttemptAppend(options))) {
+      if (takeoverDetected || state?.active !== true || !state.scope.active) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };
@@ -1981,13 +1985,9 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         isTrustedSessionFileState(sessionFileFenceKey, fingerprint)
       );
     },
-    publishOwnedSessionFileSnapshot(
-      snapshot: OwnedSessionTranscriptCacheSnapshot,
-      options?: OwnedSessionSnapshotAuthorization,
-    ): boolean {
+    publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean {
       const state = activeWriteLock.getStore();
-      const hasActiveWriteScope = state?.active === true && state.scope.active;
-      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedAttemptAppend(options))) {
+      if (takeoverDetected || state?.active !== true || !state.scope.active) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };

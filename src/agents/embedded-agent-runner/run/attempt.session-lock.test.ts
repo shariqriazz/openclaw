@@ -3,6 +3,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveSessionTranscriptPathInDir } from "../../../config/sessions/paths.js";
@@ -10,6 +11,7 @@ import {
   appendSessionTranscriptEvent,
   appendSessionTranscriptMessage,
 } from "../../../config/sessions/transcript-append.js";
+import { serializeJsonlLine } from "../../../config/sessions/transcript-jsonl.js";
 import {
   runWithOwnedSessionTranscriptWriteLock,
   runWithOwnedSessionTranscriptWritePublication,
@@ -2287,7 +2289,7 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(controller.hasSessionTakeover()).toBe(false);
   });
 
-  it("keeps parallel prompt-released tool-loop appends owned through reacquisition", async () => {
+  it("reconciles prompt-released Pi entries already owned by the active session manager", async () => {
     const sessionFile = await createTempSessionFile();
     let sessionManager: SessionManager;
     const controller = await createEmbeddedAttemptSessionLockController({
@@ -2296,6 +2298,18 @@ describe("embedded attempt session lock lifecycle", () => {
       mergePromptReleasedSessionEntries: (entries) =>
         sessionManager.mergePromptReleasedSessionEntries(entries, { persistLeaf: true }),
       reloadPromptReleasedSessionFile: () => sessionManager.setSessionFile(sessionFile),
+      recognizeAttemptOwnedSessionEntries: (entries) =>
+        entries.every((entry) => {
+          if (entry.type !== "message") {
+            return false;
+          }
+          const activeEntry = sessionManager.getEntry(entry.id);
+          return (
+            activeEntry?.type === "message" &&
+            (isDeepStrictEqual(activeEntry, entry) ||
+              serializeJsonlLine(activeEntry) === serializeJsonlLine(entry))
+          );
+        }),
     });
     sessionManager = guardSessionManager(SessionManager.open(sessionFile), {
       withCompactionPersistence: (append, validateAppend) =>
@@ -2325,10 +2339,9 @@ describe("embedded attempt session lock lifecycle", () => {
     await withOwnedSessionTranscriptWrites(
       {
         sessionFile,
-        canAdvanceSessionEntryCache: (snapshot) =>
-          controller.canAdvanceSessionEntryCache(snapshot, { allowAttemptOwnedAppend: true }),
+        canAdvanceSessionEntryCache: (snapshot) => controller.canAdvanceSessionEntryCache(snapshot),
         publishSessionFileSnapshot: (snapshot) =>
-          controller.publishOwnedSessionFileSnapshot(snapshot, { allowAttemptOwnedAppend: true }),
+          controller.publishOwnedSessionFileSnapshot(snapshot),
         withSessionWriteLock: (operation, options) =>
           controller.withSessionWriteLock(operation, options),
       },
@@ -2374,6 +2387,73 @@ describe("embedded attempt session lock lifecycle", () => {
     const cleanupLock = await controller.acquireForCleanup();
     await cleanupLock.release();
     expect(controller.hasSessionTakeover()).toBe(false);
+    await controller.dispose();
+  });
+
+  it("rejects valid prompt-released message rows absent from the active session manager", async () => {
+    const sessionFile = await createTempSessionFile();
+    let sessionManager: SessionManager;
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile },
+      mergePromptReleasedSessionEntries: (entries) =>
+        sessionManager.mergePromptReleasedSessionEntries(entries, { persistLeaf: true }),
+      reloadPromptReleasedSessionFile: () => sessionManager.setSessionFile(sessionFile),
+      recognizeAttemptOwnedSessionEntries: (entries) =>
+        entries.every((entry) => {
+          if (entry.type !== "message") {
+            return false;
+          }
+          const activeEntry = sessionManager.getEntry(entry.id);
+          return (
+            activeEntry?.type === "message" &&
+            (isDeepStrictEqual(activeEntry, entry) ||
+              serializeJsonlLine(activeEntry) === serializeJsonlLine(entry))
+          );
+        }),
+    });
+    sessionManager = guardSessionManager(SessionManager.open(sessionFile));
+    const parentId = sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "ready" }],
+      api: "messages",
+      provider: "openclaw",
+      model: "session-lock-test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    });
+    await controller.releaseForPrompt();
+    await fs.appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: "message",
+        id: "external-valid-message",
+        parentId,
+        timestamp: "2026-07-25T20:00:00.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "external-call",
+          toolName: "exec",
+          content: [{ type: "text", text: "external" }],
+          isError: false,
+          timestamp: 2,
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(controller.reacquireAfterPrompt()).rejects.toBeInstanceOf(
+      EmbeddedAttemptSessionTakeoverError,
+    );
+    expect(controller.hasSessionTakeover()).toBe(true);
     await controller.dispose();
   });
 
