@@ -136,8 +136,8 @@ describe("OpenAI provider Codex transport hooks", () => {
         id: canonicalModelId,
         api: "openai-chatgpt-responses",
         baseUrl: "https://chatgpt.com/backend-api/codex",
-        contextWindow: 1_000_000,
-        contextTokens: 872_000,
+        contextWindow: 1_050_000,
+        contextTokens: 922_000,
         maxTokens: 128_000,
       });
     },
