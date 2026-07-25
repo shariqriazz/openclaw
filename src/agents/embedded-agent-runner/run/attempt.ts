@@ -2209,10 +2209,12 @@ export async function runEmbeddedAttempt(
       sessionFile: params.sessionFile,
       sessionKey: params.sessionKey,
       canAdvanceSessionEntryCache: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-        sessionLockController.canAdvanceSessionEntryCache(snapshot, { allowRetainedLock: true }),
+        sessionLockController.canAdvanceSessionEntryCache(snapshot, {
+          allowAttemptOwnedAppend: true,
+        }),
       publishSessionFileSnapshot: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
         sessionLockController.publishOwnedSessionFileSnapshot(snapshot, {
-          allowRetainedLock: true,
+          allowAttemptOwnedAppend: true,
         }),
       withSessionWriteLock: <T>(
         operation: () => Promise<T> | T,
@@ -4682,9 +4684,13 @@ export async function runEmbeddedAttempt(
               withSessionWriteLock: (run, options) =>
                 sessionLockController.withSessionWriteLock(run, options),
               canAdvanceSessionEntryCache: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-                sessionLockController.canAdvanceSessionEntryCache(snapshot),
+                sessionLockController.canAdvanceSessionEntryCache(snapshot, {
+                  allowAttemptOwnedAppend: true,
+                }),
               publishSessionFileSnapshot: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-                sessionLockController.publishOwnedSessionFileSnapshot(snapshot),
+                sessionLockController.publishOwnedSessionFileSnapshot(snapshot, {
+                  allowAttemptOwnedAppend: true,
+                }),
             });
           }
 

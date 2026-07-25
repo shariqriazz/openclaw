@@ -1151,14 +1151,18 @@ export class EmbeddedAttemptSessionTakeoverError extends Error {
   }
 }
 
+type OwnedSessionSnapshotAuthorization = {
+  allowAttemptOwnedAppend?: boolean;
+};
+
 export type EmbeddedAttemptSessionLockController = {
   canAdvanceSessionEntryCache(
     snapshot: OwnedSessionTranscriptCacheSnapshot,
-    options?: { allowRetainedLock?: boolean },
+    options?: OwnedSessionSnapshotAuthorization,
   ): boolean;
   publishOwnedSessionFileSnapshot(
     snapshot: OwnedSessionTranscriptCacheSnapshot,
-    options?: { allowRetainedLock?: boolean },
+    options?: OwnedSessionSnapshotAuthorization,
   ): boolean;
   publishValidatedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
   readTrustedCurrentSessionFileSnapshot(): Promise<TrustedSessionFileSnapshot | undefined>;
@@ -1947,16 +1951,28 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     return await runWithPhysicalWriteLockScope(runLockedOperation, () => lock.release());
   }
 
+  function hasAuthorizedAttemptAppend(
+    options: OwnedSessionSnapshotAuthorization | undefined,
+  ): boolean {
+    // Attempt-bound Pi callbacks can outlive a provider stream. Keep their
+    // exact appends owned across retained-lock and prompt-released phases only.
+    return (
+      options?.allowAttemptOwnedAppend === true &&
+      !disposed &&
+      !cleanupStarted &&
+      !heldLockDraining &&
+      (Boolean(heldLock) || fenceActive)
+    );
+  }
+
   return {
     canAdvanceSessionEntryCache(
       snapshot: OwnedSessionTranscriptCacheSnapshot,
-      options?: { allowRetainedLock?: boolean },
+      options?: OwnedSessionSnapshotAuthorization,
     ): boolean {
       const state = activeWriteLock.getStore();
       const hasActiveWriteScope = state?.active === true && state.scope.active;
-      const hasAuthorizedRetainedLock =
-        options?.allowRetainedLock === true && Boolean(heldLock) && !heldLockDraining;
-      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedRetainedLock)) {
+      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedAttemptAppend(options))) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };
@@ -1967,13 +1983,11 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     },
     publishOwnedSessionFileSnapshot(
       snapshot: OwnedSessionTranscriptCacheSnapshot,
-      options?: { allowRetainedLock?: boolean },
+      options?: OwnedSessionSnapshotAuthorization,
     ): boolean {
       const state = activeWriteLock.getStore();
       const hasActiveWriteScope = state?.active === true && state.scope.active;
-      const hasAuthorizedRetainedLock =
-        options?.allowRetainedLock === true && Boolean(heldLock) && !heldLockDraining;
-      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedRetainedLock)) {
+      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedAttemptAppend(options))) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };

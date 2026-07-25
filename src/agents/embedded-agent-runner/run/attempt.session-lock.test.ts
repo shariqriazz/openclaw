@@ -2287,7 +2287,7 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(controller.hasSessionTakeover()).toBe(false);
   });
 
-  it("keeps parallel tool-loop appends owned through the next model boundary", async () => {
+  it("keeps parallel prompt-released tool-loop appends owned through reacquisition", async () => {
     const sessionFile = await createTempSessionFile();
     let sessionManager: SessionManager;
     const controller = await createEmbeddedAttemptSessionLockController({
@@ -2320,14 +2320,15 @@ describe("embedded attempt session lock lifecycle", () => {
     });
     await controller.releaseForPrompt();
     await controller.reacquireAfterPrompt();
+    await controller.releaseForPrompt();
 
     await withOwnedSessionTranscriptWrites(
       {
         sessionFile,
         canAdvanceSessionEntryCache: (snapshot) =>
-          controller.canAdvanceSessionEntryCache(snapshot, { allowRetainedLock: true }),
+          controller.canAdvanceSessionEntryCache(snapshot, { allowAttemptOwnedAppend: true }),
         publishSessionFileSnapshot: (snapshot) =>
-          controller.publishOwnedSessionFileSnapshot(snapshot, { allowRetainedLock: true }),
+          controller.publishOwnedSessionFileSnapshot(snapshot, { allowAttemptOwnedAppend: true }),
         withSessionWriteLock: (operation, options) =>
           controller.withSessionWriteLock(operation, options),
       },
@@ -2369,7 +2370,6 @@ describe("embedded attempt session lock lifecycle", () => {
       },
     );
 
-    await controller.releaseForPrompt();
     await expect(controller.reacquireAfterPrompt()).resolves.toBeUndefined();
     const cleanupLock = await controller.acquireForCleanup();
     await cleanupLock.release();
