@@ -8,6 +8,7 @@ import type {
   ThinkingBudgets,
   Transport,
 } from "../../llm-core/src/index.js";
+import { ActiveTurnRedirectError } from "./active-turn-redirect.js";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.js";
 import { TranscriptNotContinuableError } from "./errors.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
@@ -194,6 +195,7 @@ type ActiveRun = {
   promise: Promise<void>;
   resolve: () => void;
   abortController: AbortController;
+  modelRequestAbortController?: AbortController;
 };
 
 /**
@@ -313,6 +315,22 @@ export class Agent {
   /** Queue a message to be injected after the current assistant turn finishes. */
   steer(message: AgentMessage): void {
     this.steeringQueue.enqueue(message);
+  }
+
+  /**
+   * Redirect the active logical turn.
+   *
+   * Model generation is cancelled immediately. Tool execution is left running
+   * and receives the correction through the normal steering boundary.
+   */
+  redirect(message: AgentMessage): "redirected" | "steered" {
+    this.steeringQueue.enqueue(message);
+    const requestController = this.activeRun?.modelRequestAbortController;
+    if (requestController && !requestController.signal.aborted) {
+      requestController.abort(new ActiveTurnRedirectError());
+      return "redirected";
+    }
+    return "steered";
   }
 
   /** Queue a message to run only after the agent would otherwise stop. */
@@ -496,6 +514,18 @@ export class Agent {
         : undefined,
       convertToLlm: this.convertToLlm,
       transformContext: this.transformContext,
+      createModelRequestSignal: (runSignal) => {
+        const controller = new AbortController();
+        if (this.activeRun) {
+          this.activeRun.modelRequestAbortController = controller;
+        }
+        return runSignal ? AbortSignal.any([runSignal, controller.signal]) : controller.signal;
+      },
+      clearModelRequestSignal: () => {
+        if (this.activeRun) {
+          this.activeRun.modelRequestAbortController = undefined;
+        }
+      },
       getApiKey: this.getApiKey,
       getSteeringMessages: async () => {
         if (skipInitialSteeringPoll) {

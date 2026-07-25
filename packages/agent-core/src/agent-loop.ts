@@ -9,6 +9,7 @@ import type {
   ToolResultMessage,
 } from "../../llm-core/src/index.js";
 import type { EventStream as SourceEventStream } from "../../llm-core/src/index.js";
+import { isActiveTurnRedirect } from "./active-turn-redirect.js";
 import { TranscriptNotContinuableError } from "./errors.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
 import { type AgentCoreStreamRuntimeDeps, resolveAgentCoreStreamFn } from "./runtime-deps.js";
@@ -87,6 +88,24 @@ function removeNonExecutableToolCalls(message: AssistantMessage): AssistantMessa
   }
   const content = message.content.filter((item) => item.type !== "toolCall");
   return content.length === message.content.length ? message : { ...message, content };
+}
+
+function createRedirectCheckpoint(message: AssistantMessage): AssistantMessage {
+  const content = message.content.flatMap((item) => {
+    if (item.type === "text" && item.text) {
+      return [{ type: "text" as const, text: item.text }];
+    }
+    if (item.type === "thinking" && !item.redacted && item.thinking) {
+      return [{ type: "text" as const, text: item.thinking }];
+    }
+    return [];
+  });
+  return {
+    ...message,
+    content,
+    stopReason: "stop",
+    errorMessage: undefined,
+  };
 }
 
 /**
@@ -335,14 +354,20 @@ async function runLoop(
       }
 
       // Stream assistant response
-      const message = await streamAssistantResponse(
-        currentContext,
-        config,
-        signal,
-        emit,
-        streamFn,
-        runtime,
-      );
+      const modelRequestSignal = config.createModelRequestSignal?.(signal) ?? signal;
+      let message: AssistantMessage;
+      try {
+        message = await streamAssistantResponse(
+          currentContext,
+          config,
+          modelRequestSignal,
+          emit,
+          streamFn,
+          runtime,
+        );
+      } finally {
+        config.clearModelRequestSignal?.();
+      }
       newMessages.push(message);
 
       if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -483,53 +508,82 @@ async function streamAssistantResponse(
   let partialMessage: AssistantMessage | null = null;
   let addedPartial = false;
 
-  for await (const event of response) {
-    switch (event.type) {
-      case "start": {
-        const message = event.partial;
-        partialMessage = message;
-        context.messages.push(message);
-        addedPartial = true;
-        await emit({ type: "message_start", message: { ...message } });
-        break;
-      }
-
-      case "text_start":
-      case "text_delta":
-      case "text_end":
-      case "thinking_start":
-      case "thinking_delta":
-      case "thinking_end":
-      case "toolcall_start":
-      case "toolcall_delta":
-      case "toolcall_end":
-        if (partialMessage) {
-          const message = resolveAssistantMessageUpdate(event, partialMessage);
+  try {
+    for await (const event of response) {
+      switch (event.type) {
+        case "start": {
+          const message = event.partial;
           partialMessage = message;
-          context.messages[context.messages.length - 1] = message;
-          await emit({
-            type: "message_update",
-            assistantMessageEvent: event,
-            message: { ...message },
-          });
+          context.messages.push(message);
+          addedPartial = true;
+          await emit({ type: "message_start", message: { ...message } });
+          break;
         }
-        break;
 
-      case "done":
-      case "error": {
-        const finalMessage = removeNonExecutableToolCalls(await response.result());
-        if (addedPartial) {
-          context.messages[context.messages.length - 1] = finalMessage;
-        } else {
-          context.messages.push(finalMessage);
+        case "text_start":
+        case "text_delta":
+        case "text_end":
+        case "thinking_start":
+        case "thinking_delta":
+        case "thinking_end":
+        case "toolcall_start":
+        case "toolcall_delta":
+        case "toolcall_end":
+          if (partialMessage) {
+            const message = resolveAssistantMessageUpdate(event, partialMessage);
+            partialMessage = message;
+            context.messages[context.messages.length - 1] = message;
+            await emit({
+              type: "message_update",
+              assistantMessageEvent: event,
+              message: { ...message },
+            });
+          }
+          break;
+
+        case "done":
+        case "error": {
+          const responseMessage = removeNonExecutableToolCalls(await response.result());
+          const finalMessage = isActiveTurnRedirect(signal?.reason)
+            ? createRedirectCheckpoint(responseMessage)
+            : responseMessage;
+          if (addedPartial) {
+            context.messages[context.messages.length - 1] = finalMessage;
+          } else {
+            context.messages.push(finalMessage);
+          }
+          if (!addedPartial) {
+            await emit({ type: "message_start", message: { ...finalMessage } });
+          }
+          await emit({ type: "message_end", message: finalMessage });
+          return finalMessage;
         }
-        if (!addedPartial) {
-          await emit({ type: "message_start", message: { ...finalMessage } });
-        }
-        await emit({ type: "message_end", message: finalMessage });
-        return finalMessage;
       }
     }
+  } catch (error) {
+    if (!isActiveTurnRedirect(signal?.reason)) {
+      throw error;
+    }
+    const checkpoint = createRedirectCheckpoint(
+      partialMessage ?? {
+        role: "assistant",
+        content: [],
+        api: config.model.api,
+        provider: config.model.provider,
+        model: config.model.id,
+        usage: EMPTY_USAGE,
+        stopReason: "aborted",
+        timestamp: Date.now(),
+      },
+    );
+    if (addedPartial) {
+      context.messages[context.messages.length - 1] = checkpoint;
+    } else {
+      context.messages.push(checkpoint);
+      await emit({ type: "message_start", message: { ...checkpoint } });
+    }
+    await emit({ type: "message_end", message: checkpoint });
+    return checkpoint;
   }
 
   const finalMessage = removeNonExecutableToolCalls(await response.result());

@@ -196,6 +196,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
   transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 
   /**
+   * Creates the signal for one provider request. The owning Agent uses this to
+   * cancel model generation for active-turn redirect without aborting tools.
+   */
+  createModelRequestSignal?: (runSignal?: AbortSignal) => AbortSignal | undefined;
+
+  /** Releases request-only cancellation state after one provider request settles. */
+  clearModelRequestSignal?: () => void;
+
+  /**
    * Resolves an API key dynamically for each LLM call.
    *
    * Useful for short-lived OAuth tokens (e.g., GitHub Copilot) that may expire
