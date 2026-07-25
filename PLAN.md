@@ -65,10 +65,29 @@ This means:
   removes event-loop work before considering any operator-facing concurrency
   reduction.
 
-SQLite plus one worker was the best exploratory combination, but those
-benchmarks are not currently reproducible because their `/tmp` harness and
-fixtures were not retained. Phase 0 must reproduce the ranking in a
-repository-owned benchmark before Phase 1 begins.
+SQLite plus one worker was the best exploratory combination, but the original
+`/tmp` harness and fixtures were not retained. Phase 0 therefore had to
+reproduce the ranking in a repository-owned benchmark before Phase 1 began.
+
+Phase 0 is now reproducible through `pnpm bench:gateway-persistence`. The
+benchmark runs each candidate in a fresh child process against 504 session
+entries, sixteen concurrent 10 MiB trajectory windows, and 48 mixed
+operations. Five repetitions on 2026-07-25 produced these medians:
+
+| Variant                                 | ops/s | event-loop p99 | peak RSS delta | physical writes |
+| --------------------------------------- | ----: | -------------: | -------------: | --------------: |
+| Checked-out source                      |  8.30 |       80.67 ms |     166.24 MiB |      486.02 MiB |
+| Naive one worker                        |  5.44 |       13.33 ms |     642.82 MiB |      943.31 MiB |
+| Batched JSON + bounded streaming worker |  9.38 |        3.07 ms |     194.96 MiB |      535.13 MiB |
+| SQLite rows + bounded streaming worker  |  9.95 |        3.63 ms |      52.39 MiB |      479.27 MiB |
+
+The worker-only variants prove that moving work off the event loop without
+changing the whole-store session path is not sufficient: it can increase total
+memory materially. The combined SQLite/worker candidate improved throughput by
+19.9%, reduced event-loop p99 by 95.5%, reduced incremental RSS by 68.5%, and
+reduced physical writes by 1.4% in this mixed fixture. These are pre-
+implementation harness results; the same command must be rerun against the
+production implementation before deployment.
 
 Phase 1 may move trajectory maintenance to one worker after that reproduction.
 Phase 2 remains the target architecture for session metadata, but activation is
