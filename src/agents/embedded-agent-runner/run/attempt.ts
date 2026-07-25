@@ -4866,22 +4866,25 @@ export async function runEmbeddedAttempt(
                   llmBoundaryOptionsForPrecheck,
                 )
               : undefined;
-          const hasAuthoritativeContextEngineEstimate =
+          const authoritativeContextEngineTokens =
             contextEngineAssemblySucceeded &&
             contextEnginePromptAuthority === "assembled" &&
-            typeof contextEngineAssembledEstimatedTokens === "number";
-          const llmBoundaryTokenPressure = hasAuthoritativeContextEngineEstimate
-            ? estimateContextEngineLlmBoundaryTokenPressure({
-                estimatedContextTokens: contextEngineAssembledEstimatedTokens,
-                systemPrompt: systemPromptForHook,
-                prompt: llmBoundaryPromptForPrecheck,
-                toolSchemaChars: systemPromptReport?.tools.schemaChars,
-              })
-            : estimateLlmBoundaryTokenPressure({
-                messages: hookMessagesForCurrentPrompt,
-                systemPrompt: systemPromptForHook,
-                prompt: llmBoundaryPromptForPrecheck,
-              });
+            typeof contextEngineAssembledEstimatedTokens === "number"
+              ? contextEngineAssembledEstimatedTokens
+              : undefined;
+          const llmBoundaryTokenPressure =
+            authoritativeContextEngineTokens !== undefined
+              ? estimateContextEngineLlmBoundaryTokenPressure({
+                  estimatedContextTokens: authoritativeContextEngineTokens,
+                  systemPrompt: systemPromptForHook,
+                  prompt: llmBoundaryPromptForPrecheck,
+                  toolSchemaChars: systemPromptReport?.tools.schemaChars,
+                })
+              : estimateLlmBoundaryTokenPressure({
+                  messages: hookMessagesForCurrentPrompt,
+                  systemPrompt: systemPromptForHook,
+                  prompt: llmBoundaryPromptForPrecheck,
+                });
           let preemptiveCompaction = null;
           const shouldSkipPrecheck = skipPromptSubmission;
 
@@ -4898,9 +4901,10 @@ export async function runEmbeddedAttempt(
               toolResultMaxChars: promptToolResultMaxChars,
               llmBoundaryTokenPressure: {
                 estimatedPromptTokens: llmBoundaryTokenPressure,
-                source: hasAuthoritativeContextEngineEstimate
-                  ? "context_engine_assembled_plus_host_overhead"
-                  : "llm_boundary_normalized_prompt",
+                source:
+                  authoritativeContextEngineTokens !== undefined
+                    ? "context_engine_assembled_plus_host_overhead"
+                    : "llm_boundary_normalized_prompt",
                 renderedChars: llmBoundaryPromptForPrecheck.length,
               },
             });
