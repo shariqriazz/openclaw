@@ -49,6 +49,7 @@ export async function delegateCompactionToRuntime(
     sessionFile: params.sessionFile,
     tokenBudget: params.tokenBudget,
     ...(currentTokenCount !== undefined ? { currentTokenCount } : {}),
+    targetPromptTokens: params.targetPromptTokens,
     force: params.force,
     customInstructions: params.customInstructions,
     abortSignal: params.abortSignal,

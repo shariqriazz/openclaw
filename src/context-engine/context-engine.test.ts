@@ -577,6 +577,7 @@ describe("Engine contract tests", () => {
       sessionId: "s2",
       sessionFile: "/tmp/session.json",
       tokenBudget: 4096,
+      targetPromptTokens: 3072,
       runtimeContext: {
         workspaceDir: "/tmp/workspace",
         currentTokenCount: 12345,
@@ -588,6 +589,7 @@ describe("Engine contract tests", () => {
     expect(compactRuntimeParams.sessionId).toBe("s2");
     expect(compactRuntimeParams.sessionFile).toBe("/tmp/session.json");
     expect(compactRuntimeParams.tokenBudget).toBe(4096);
+    expect(compactRuntimeParams.targetPromptTokens).toBe(3072);
     expect(compactRuntimeParams.currentTokenCount).toBe(12345);
     expect(compactRuntimeParams.workspaceDir).toBe("/tmp/workspace");
     expect(result).toEqual({
