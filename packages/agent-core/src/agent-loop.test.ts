@@ -61,6 +61,19 @@ async function collectEvents(stream: AsyncIterable<AgentEvent>): Promise<AgentEv
   return events;
 }
 
+type RedirectableAgent = Agent & {
+  redirect(message: AgentMessage): "redirected" | "steered";
+};
+
+function requireRedirect(agent: Agent): RedirectableAgent["redirect"] {
+  const redirect = (agent as Partial<RedirectableAgent>).redirect;
+  if (typeof redirect !== "function") {
+    agent.abort();
+    throw new Error("Agent.redirect is not implemented");
+  }
+  return redirect.bind(agent);
+}
+
 function expectTerminalFailure(events: AgentEvent[], result: AgentMessage[]): void {
   expect(events.map((event) => event.type)).toContain("agent_end");
   expect(result).toHaveLength(1);
@@ -70,6 +83,204 @@ function expectTerminalFailure(events: AgentEvent[], result: AgentMessage[]): vo
     errorMessage: "provider exploded",
   });
 }
+
+describe("Agent active-turn redirect", () => {
+  it("cancels only model generation and continues the same logical turn", async () => {
+    let notifyStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const contexts: Context[] = [];
+    const requestSignals: AbortSignal[] = [];
+    let streamCalls = 0;
+    const agent = new Agent({
+      initialState: { model },
+      convertToLlm: (messages) => messages as Message[],
+      streamFn: async (_model, context, options) => {
+        contexts.push(context);
+        streamCalls += 1;
+        const stream = createAssistantMessageEventStream();
+        if (streamCalls === 1) {
+          const partial: AssistantMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: "obsolete partial" }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: TEST_USAGE,
+            stopReason: "stop",
+            timestamp: 1,
+          };
+          const signal = options?.signal;
+          if (!signal) {
+            throw new Error("expected model request signal");
+          }
+          requestSignals.push(signal);
+          queueMicrotask(() => {
+            stream.push({ type: "start", partial });
+            notifyStarted();
+          });
+          signal.addEventListener(
+            "abort",
+            () => {
+              const aborted = { ...partial, stopReason: "aborted" as const };
+              stream.push({ type: "error", reason: "aborted", error: aborted });
+              stream.end(aborted);
+            },
+            { once: true },
+          );
+          return stream;
+        }
+
+        const finalMessage: AssistantMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: "corrected response" }],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: TEST_USAGE,
+          stopReason: "stop",
+          timestamp: 3,
+        };
+        queueMicrotask(() => {
+          stream.push({ type: "done", reason: "stop", message: finalMessage });
+          stream.end(finalMessage);
+        });
+        return stream;
+      },
+    });
+
+    const prompt = agent.prompt("original request");
+    await started;
+    let redirect: RedirectableAgent["redirect"];
+    try {
+      redirect = requireRedirect(agent);
+    } catch (error) {
+      await prompt;
+      throw error;
+    }
+    expect(redirect({ role: "user", content: "use the correction", timestamp: 2 })).toBe(
+      "redirected",
+    );
+    await prompt;
+
+    expect(requestSignals[0]?.aborted).toBe(true);
+    expect(agent.signal).toBeUndefined();
+    expect(streamCalls).toBe(2);
+    expect(contexts[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant" }),
+        expect.objectContaining({ role: "user", content: "use the correction" }),
+      ]),
+    );
+    expect(agent.state.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "corrected response" }],
+    });
+  });
+
+  it("waits for a running tool and applies the correction before the next model request", async () => {
+    let releaseTool = () => {};
+    const toolRelease = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    let notifyToolStarted = () => {};
+    const toolStarted = new Promise<void>((resolve) => {
+      notifyToolStarted = resolve;
+    });
+    const contexts: Context[] = [];
+    const execute = vi.fn(async () => {
+      notifyToolStarted();
+      await toolRelease;
+      return {
+        content: [{ type: "text" as const, text: "tool completed" }],
+        details: { completed: true },
+      };
+    });
+    let streamCalls = 0;
+    const agent = new Agent({
+      initialState: {
+        model,
+        tools: [
+          {
+            name: "side_effect",
+            label: "side_effect",
+            description: "Runs once",
+            parameters: Type.Object({}, { additionalProperties: false }),
+            execute,
+          },
+        ],
+      },
+      convertToLlm: (messages) => messages as Message[],
+      streamFn: async (_model, context) => {
+        contexts.push(context);
+        streamCalls += 1;
+        const stream = createAssistantMessageEventStream();
+        const message: AssistantMessage =
+          streamCalls === 1
+            ? {
+                role: "assistant",
+                content: [
+                  {
+                    type: "toolCall",
+                    id: "call-side-effect",
+                    name: "side_effect",
+                    arguments: {},
+                  },
+                ],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage: TEST_USAGE,
+                stopReason: "toolUse",
+                timestamp: 1,
+              }
+            : {
+                role: "assistant",
+                content: [{ type: "text", text: "used correction" }],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage: TEST_USAGE,
+                stopReason: "stop",
+                timestamp: 3,
+              };
+        queueMicrotask(() => {
+          stream.push({
+            type: "done",
+            reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+            message,
+          });
+          stream.end(message);
+        });
+        return stream;
+      },
+    });
+
+    const prompt = agent.prompt("perform the work");
+    await toolStarted;
+    let redirect: RedirectableAgent["redirect"];
+    try {
+      redirect = requireRedirect(agent);
+    } catch (error) {
+      releaseTool();
+      await prompt;
+      throw error;
+    }
+    expect(redirect({ role: "user", content: "adjust the result", timestamp: 2 })).toBe("steered");
+    expect(agent.signal?.aborted).toBe(false);
+    releaseTool();
+    await prompt;
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(contexts[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "toolResult" }),
+        expect.objectContaining({ role: "user", content: "adjust the result" }),
+      ]),
+    );
+  });
+});
 
 describe("agentLoop EventStream failures", () => {
   it("ends the public stream when a new prompt run rejects", async () => {

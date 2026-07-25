@@ -75,6 +75,21 @@ describe("resolveQueueSettings", () => {
     });
   });
 
+  it("uses explicit redirect mode without changing the omitted-mode default", () => {
+    expect(
+      resolveQueueSettings({
+        cfg: {
+          messages: {
+            queue: {
+              mode: "redirect" as never,
+            },
+          },
+        } as OpenClawConfig,
+      }).mode,
+    ).toBe("redirect");
+    expect(resolveQueueSettings({ cfg: {} as OpenClawConfig }).mode).toBe("steer");
+  });
+
   it("ignores removed steering queue modes from stale config", () => {
     expect(
       resolveQueueSettings({

@@ -1643,7 +1643,7 @@ describe("sessions tools", () => {
     expect(calls.some((call) => call.method === "agent")).toBe(false);
   });
 
-  it("sessions_send keeps ordinary active session targets on the gateway agent path", async () => {
+  it("sessions_send joins an ordinary persistent target's active run", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     const ordinaryActiveKey = "agent:main:main";
     const queueMessage = vi.fn(async () => {});
@@ -1685,18 +1685,24 @@ describe("sessions tools", () => {
 
     const result = await tool.execute("call-ordinary-active", {
       sessionKey: ordinaryActiveKey,
-      message: "ordinary active target should stay gateway routed",
+      message: "ordinary active target should join its active owner",
       timeoutSeconds: 0,
     });
 
     const details = sessionsSendDetails(result.details);
     expect(details.status).toBe("accepted");
-    expect(details.runId).toBe("ordinary-agent-run");
     expect(details.sessionKey).toBe(ordinaryActiveKey);
-    expect(queueMessage).not.toHaveBeenCalled();
-    const agentCalls = calls.filter((call) => call.method === "agent");
-    expect(agentCalls).toHaveLength(1);
-    expect(agentParams(agentCalls[0] ?? {}).sessionKey).toBe(ordinaryActiveKey);
+    const queuedText = queueMessage.mock.calls[0]?.[0];
+    expect(queuedText).toContain("[Inter-session message]");
+    expect(queuedText).toContain("ordinary active target should join its active owner");
+    expect(queueMessage).toHaveBeenCalledWith(queuedText, {
+      steeringMode: "all",
+      debounceMs: 0,
+      deliveryTimeoutMs: 30_000,
+      waitForTranscriptCommit: true,
+      sourceReplyDeliveryMode: "automatic",
+    });
+    expect(calls.some((call) => call.method === "agent")).toBe(false);
   });
 
   it("sessions_send falls back from stranded cron run key to durable cron parent", async () => {
