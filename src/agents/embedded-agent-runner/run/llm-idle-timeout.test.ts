@@ -16,7 +16,6 @@ import {
 } from "./llm-idle-timeout.js";
 
 const DEFAULT_LLM_IDLE_TIMEOUT_MS = 120_000;
-const CRON_LLM_IDLE_TIMEOUT_MS = 60_000;
 const CLOUD_LLM_FIRST_EVENT_TIMEOUT_MS = DEFAULT_LLM_IDLE_TIMEOUT_MS;
 const LOCAL_LLM_FIRST_EVENT_TIMEOUT_MS = 300_000;
 
@@ -48,10 +47,8 @@ describe("resolveLlmIdleTimeoutMs", () => {
     expect(resolveLlmIdleTimeoutMs({ runTimeoutMs: 30_000 })).toBe(30_000);
   });
 
-  it("caps explicit cron run timeouts so stream stalls can reach model fallbacks", () => {
-    expect(resolveLlmIdleTimeoutMs({ trigger: "cron", runTimeoutMs: 600_000 })).toBe(
-      CRON_LLM_IDLE_TIMEOUT_MS,
-    );
+  it("honors explicit cron run timeouts instead of imposing a shorter stream watchdog", () => {
+    expect(resolveLlmIdleTimeoutMs({ trigger: "cron", runTimeoutMs: 600_000 })).toBe(600_000);
   });
 
   it("uses shorter explicit cron run timeouts as the idle watchdog ceiling", () => {
@@ -168,7 +165,7 @@ describe("resolveLlmIdleTimeoutMs", () => {
     ["custom-proxy", "custom-proxy/gpt-5.5", "http://gateway:4000/v1"],
     ["ollama-cloud", "ollama-cloud/kimi-k2.6", "http://ollama-host:11434"],
   ])(
-    "keeps the cron stall cap for cloud provider %s routed through single-label host %s",
+    "honors explicit cron run timeouts for cloud provider %s routed through single-label host %s",
     (provider, id, baseUrl) => {
       expect(
         resolveLlmIdleTimeoutMs({
@@ -176,25 +173,25 @@ describe("resolveLlmIdleTimeoutMs", () => {
           runTimeoutMs: 600_000,
           model: { provider, id, baseUrl },
         }),
-      ).toBe(CRON_LLM_IDLE_TIMEOUT_MS);
+      ).toBe(600_000);
     },
   );
 
-  it("keeps the cron stall cap for remote or cloud hostnames", () => {
+  it("honors explicit cron run timeouts for remote or cloud hostnames", () => {
     expect(
       resolveLlmIdleTimeoutMs({
         trigger: "cron",
         runTimeoutMs: 600_000,
         model: { provider: "openai", id: "openai/gpt-5.5", baseUrl: "https://api.openai.com/v1" },
       }),
-    ).toBe(CRON_LLM_IDLE_TIMEOUT_MS);
+    ).toBe(600_000);
     expect(
       resolveLlmIdleTimeoutMs({
         trigger: "cron",
         runTimeoutMs: 600_000,
         model: { provider: "ollama", id: "ollama/gpt-oss:cloud", baseUrl: "http://ollama-host" },
       }),
-    ).toBe(CRON_LLM_IDLE_TIMEOUT_MS);
+    ).toBe(600_000);
   });
 
   it("disables the idle watchdog when an explicit run timeout disables timeouts", () => {

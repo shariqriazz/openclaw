@@ -20,9 +20,6 @@ import type { EmbeddedRunTrigger } from "./params.js";
 const DEFAULT_LLM_IDLE_TIMEOUT_MS = 120_000;
 const CLOUD_LLM_FIRST_EVENT_TIMEOUT_MS = DEFAULT_LLM_IDLE_TIMEOUT_MS;
 const LOCAL_LLM_FIRST_EVENT_TIMEOUT_MS = 300_000;
-// Cron has its own outer watchdog; stream stalls must fail early enough for
-// the existing model fallback chain to try the next configured candidate.
-const CRON_LLM_IDLE_TIMEOUT_MS = 60_000;
 const LOCAL_PROVIDER_AUTH_MARKERS = new Set(["custom-local", "ollama-local"]);
 const SELF_HOSTED_PROVIDER_ID_PREFIXES = ["ollama", "lmstudio", "vllm", "sglang", "llama-cpp"];
 
@@ -257,11 +254,7 @@ export function resolveLlmIdleTimeoutMs(params?: {
   const hasExplicitRunTimeout =
     typeof runTimeoutMs === "number" && Number.isFinite(runTimeoutMs) && runTimeoutMs > 0;
   const runTimeoutIsNoTimeout = hasExplicitRunTimeout && runTimeoutMs >= MAX_TIMER_TIMEOUT_MS;
-  const {
-    isLocalRuntimeModel,
-    isExplicitLocalHostnameRuntimeModel,
-    isSelfHostedHostnameRuntimeModel,
-  } = resolveRuntimeModelLocality(params);
+  const { isLocalRuntimeModel } = resolveRuntimeModelLocality(params);
   const timeoutBounds = [
     runTimeoutIsNoTimeout ? undefined : runTimeoutMs,
     hasExplicitRunTimeout ? undefined : agentTimeoutMs,
@@ -302,14 +295,10 @@ export function resolveLlmIdleTimeoutMs(params?: {
       return 0;
     }
     if (params?.trigger === "cron") {
-      if (
-        isLocalRuntimeModel ||
-        isExplicitLocalHostnameRuntimeModel ||
-        isSelfHostedHostnameRuntimeModel
-      ) {
-        return clampTimeoutMs(runTimeoutMs);
-      }
-      return clampTimeoutMs(Math.min(runTimeoutMs, CRON_LLM_IDLE_TIMEOUT_MS));
+      // Cron jobs already have an explicit outer run deadline. Preserve that
+      // contract instead of aborting valid slow model calls at an unrelated
+      // fixed threshold.
+      return clampTimeoutMs(runTimeoutMs);
     }
     return clampImplicitTimeoutMs(runTimeoutMs);
   }
