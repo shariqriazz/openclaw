@@ -399,7 +399,7 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for pending timeout abort release before prompt reacquire (#86816)", async () => {
+  it("does not reacquire after a pending timeout abort release (#86816)", async () => {
     const events: string[] = [];
     let markHeldReleaseStarted!: () => void;
     const heldReleaseStarted = new Promise<void>((resolve) => {
@@ -441,8 +441,8 @@ describe("embedded attempt session lock lifecycle", () => {
     await reacquire;
     await controller.dispose();
 
-    expect(acquireSessionWriteLockLocal23).toHaveBeenCalledTimes(2);
-    expect(events).toEqual(["held-release-start", "held-release-end", "reacquired-release"]);
+    expect(acquireSessionWriteLockLocal23).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["held-release-start", "held-release-end"]);
   });
 
   it("waits for active retained-lock writes before abort release (#86816)", async () => {
@@ -4314,6 +4314,94 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(2);
   });
 
+  it("serializes fresh physical write locks within one attempt", async () => {
+    const sessionFile = await createTempSessionFile();
+    let activePhysicalLocks = 0;
+    let maxActivePhysicalLocks = 0;
+    const acquireSessionWriteLockLocal = vi.fn(async () => {
+      activePhysicalLocks += 1;
+      maxActivePhysicalLocks = Math.max(maxActivePhysicalLocks, activePhysicalLocks);
+      if (activePhysicalLocks > 1) {
+        throw new SessionWriteLockTimeoutError({
+          timeoutMs: lockOptions.timeoutMs,
+          owner: "pid=self",
+          lockPath: `${sessionFile}.lock`,
+        });
+      }
+      return {
+        release: vi.fn(async () => {
+          activePhysicalLocks -= 1;
+        }),
+      };
+    });
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock: acquireSessionWriteLockLocal,
+      lockOptions: { ...lockOptions, sessionFile },
+    });
+    await controller.releaseForPrompt();
+
+    let finishFirstWrite!: () => void;
+    const firstWriteCanFinish = new Promise<void>((resolve) => {
+      finishFirstWrite = resolve;
+    });
+    let firstWriteStarted = false;
+    const firstWrite = controller.withSessionWriteLock(async () => {
+      firstWriteStarted = true;
+      await firstWriteCanFinish;
+    });
+    await waitUntil(() => firstWriteStarted, "expected first physical write to start");
+
+    let secondWriteStarted = false;
+    const secondWrite = controller.withSessionWriteLock(async () => {
+      secondWriteStarted = true;
+    });
+    await Promise.resolve();
+
+    expect(secondWriteStarted).toBe(false);
+    expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(2);
+
+    finishFirstWrite();
+    await Promise.all([firstWrite, secondWrite]);
+
+    expect(secondWriteStarted).toBe(true);
+    expect(maxActivePhysicalLocks).toBe(1);
+    expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(3);
+    expect(controller.hasSessionTakeover()).toBe(false);
+  });
+
+  it("keeps physical writes concurrent across different session controllers", async () => {
+    const firstSessionFile = await createTempSessionFile();
+    const secondSessionFile = await createTempSessionFile();
+    const firstController = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile: firstSessionFile },
+    });
+    const secondController = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile: secondSessionFile },
+    });
+    await Promise.all([firstController.releaseForPrompt(), secondController.releaseForPrompt()]);
+
+    let activeWrites = 0;
+    let finishWrites!: () => void;
+    const writesCanFinish = new Promise<void>((resolve) => {
+      finishWrites = resolve;
+    });
+    const runWrite = async () => {
+      activeWrites += 1;
+      await writesCanFinish;
+    };
+    const firstWrite = firstController.withSessionWriteLock(runWrite);
+    const secondWrite = secondController.withSessionWriteLock(runWrite);
+    await waitUntil(() => activeWrites === 2, "expected different sessions to write concurrently");
+
+    finishWrites();
+    await Promise.all([firstWrite, secondWrite]);
+
+    expect(firstController.hasSessionTakeover()).toBe(false);
+    expect(secondController.hasSessionTakeover()).toBe(false);
+  });
+
   it("releaseHeldLockWithFence sets deferred flag when bailed out during active scope; re-attempted after scope deactivation (#95915)", async () => {
     const events: string[] = [];
     const releasePrep = vi.fn(async () => events.push("prep-release"));
@@ -4341,13 +4429,17 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(2);
   });
 
-  it("controls the held lock lifecycle across deferred abort release, reacquisition, and prompt release", async () => {
+  it("prevents prompt-finally reacquisition after abort while allowing owned cleanup writes", async () => {
     const events: string[] = [];
+    let finishRetainedWrite!: () => void;
+    const retainedWriteCanFinish = new Promise<void>((resolve) => {
+      finishRetainedWrite = resolve;
+    });
     const acquireSessionWriteLockLocal = vi
       .fn()
       .mockResolvedValueOnce({ release: vi.fn(async () => events.push("init-release")) })
       .mockResolvedValueOnce({ release: vi.fn(async () => events.push("held-release")) })
-      .mockResolvedValueOnce({ release: vi.fn(async () => events.push("reacquire-release")) });
+      .mockResolvedValueOnce({ release: vi.fn(async () => events.push("cleanup-write-release")) });
 
     const controller = await createEmbeddedAttemptSessionLockController({
       acquireSessionWriteLock: acquireSessionWriteLockLocal,
@@ -4357,17 +4449,31 @@ describe("embedded attempt session lock lifecycle", () => {
     await controller.releaseForPrompt();
     await controller.reacquireAfterPrompt();
 
+    const retainedWrite = controller.withSessionWriteLock(async () => {
+      events.push("retained-write");
+      await retainedWriteCanFinish;
+    });
+    await waitUntil(() => events.includes("retained-write"), "expected retained write to start");
+
+    const abortRelease = controller.releaseHeldLockForAbort();
+    await controller.reacquireAfterPrompt();
+    expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(2);
+
+    finishRetainedWrite();
+    await retainedWrite;
+    await abortRelease;
+
     await controller.withSessionWriteLock(async () => {
-      events.push("write");
-      await controller.releaseHeldLockForAbort();
+      events.push("cleanup-write");
     });
 
-    expect(events).toEqual(["init-release", "write", "held-release"]);
-
-    await controller.reacquireAfterPrompt();
-    await controller.releaseForPrompt();
-
-    expect(events).toEqual(["init-release", "write", "held-release", "reacquire-release"]);
+    expect(events).toEqual([
+      "init-release",
+      "retained-write",
+      "held-release",
+      "cleanup-write",
+      "cleanup-write-release",
+    ]);
     expect(acquireSessionWriteLockLocal).toHaveBeenCalledTimes(3);
   });
 

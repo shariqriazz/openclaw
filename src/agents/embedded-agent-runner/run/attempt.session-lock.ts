@@ -1213,6 +1213,7 @@ export async function createEmbeddedAttemptSessionLockController(params: {
   // later reacquire once cleanup has begun or it could orphan a retained lock.
   let lockLifecycle: Promise<void> = Promise.resolve();
   let cleanupStarted = false;
+  let abortReleaseStarted = false;
   // Set when an active retained write prevents immediate held-lock release.
   // The scope completion path retries release after the retained use unwinds.
   let releaseHeldLockDeferred = false;
@@ -1392,6 +1393,23 @@ export async function createEmbeddedAttemptSessionLockController(params: {
       }
       throw err;
     }
+  }
+
+  function tryAcquireRetainedWriteLock():
+    | {
+        lock: SessionLock;
+        owned: false;
+        releaseRetainedUse: () => void;
+      }
+    | undefined {
+    if (!heldLock || heldLockDraining) {
+      return undefined;
+    }
+    return {
+      lock: heldLock,
+      owned: false,
+      releaseRetainedUse: beginRetainedLockUse(),
+    };
   }
 
   async function waitForHeldLockDrain(): Promise<void> {
@@ -1922,28 +1940,41 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         options.resolvePublishedEntriesAfterFailure,
       );
     }
-    const { lock, owned, releaseRetainedUse } = await acquireWriteLock();
-    const runLockedOperation = async () => {
-      await assertSessionFileFence();
-      if (options?.publishOwnedWrite === true) {
-        return await runPublishingOwnedSessionFileWrite(
-          run,
-          options.resolvePublishedEntries,
-          options.resolvePublishedEntriesAfterFailure,
-        );
+    const runLockedWrite = async (
+      lockState: Awaited<ReturnType<typeof acquireWriteLock>>,
+    ): Promise<T> => {
+      const { lock, owned, releaseRetainedUse } = lockState;
+      const runLockedOperation = async () => {
+        if (takeoverDetected) {
+          throw new EmbeddedAttemptSessionTakeoverError(params.lockOptions.sessionFile);
+        }
+        await assertSessionFileFence();
+        if (options?.publishOwnedWrite === true) {
+          return await runPublishingOwnedSessionFileWrite(
+            run,
+            options.resolvePublishedEntries,
+            options.resolvePublishedEntriesAfterFailure,
+          );
+        }
+        const beforeWrite = await readSessionFileFingerprint(params.lockOptions.sessionFile);
+        try {
+          return await run();
+        } finally {
+          await refreshSessionFileFence(beforeWrite);
+        }
+      };
+      if (!owned) {
+        return await runWithRetainedLock(runLockedOperation, releaseRetainedUse ?? (() => {}));
       }
-      const beforeWrite = await readSessionFileFingerprint(params.lockOptions.sessionFile);
-      try {
-        return await run();
-      } finally {
-        await refreshSessionFileFence(beforeWrite);
-      }
+      return await runWithPhysicalWriteLockScope(runLockedOperation, () => lock.release());
     };
-    if (!owned) {
-      return await runWithRetainedLock(runLockedOperation, releaseRetainedUse ?? (() => {}));
+    const retainedLock = tryAcquireRetainedWriteLock();
+    if (retainedLock) {
+      return await runLockedWrite(retainedLock);
     }
-
-    return await runWithPhysicalWriteLockScope(runLockedOperation, () => lock.release());
+    return await runLockLifecycle(async () => {
+      return await runLockedWrite(await acquireWriteLock());
+    });
   }
 
   return {
@@ -2006,10 +2037,21 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         : undefined;
     },
     async releaseForPrompt(): Promise<void> {
-      await releaseHeldLockWithFence();
+      if (activeWriteLock.getStore()?.scope.active === true) {
+        await releaseHeldLockWithFence();
+        return;
+      }
+      await runLockLifecycle(releaseHeldLockWithFence);
     },
     async releaseHeldLockForAbort(): Promise<void> {
-      await releaseHeldLockWithFence();
+      // The prompt's finally path can race abort-triggered Pi persistence.
+      // Mark abort synchronously so that path cannot reacquire this lock.
+      abortReleaseStarted = true;
+      if (activeWriteLock.getStore()?.scope.active === true) {
+        await releaseHeldLockWithFence();
+        return;
+      }
+      await runLockLifecycle(releaseHeldLockWithFence);
     },
     refreshAfterOwnedSessionWrite(): void {
       if (takeoverDetected) {
@@ -2051,12 +2093,12 @@ export async function createEmbeddedAttemptSessionLockController(params: {
       return result;
     },
     async reacquireAfterPrompt(): Promise<void> {
-      if (cleanupStarted) {
+      if (cleanupStarted || abortReleaseStarted) {
         return;
       }
       await runLockLifecycle(async () => {
         await waitForHeldLockDrain();
-        if (disposed || takeoverDetected || heldLock) {
+        if (disposed || takeoverDetected || heldLock || abortReleaseStarted) {
           return;
         }
         let lock: SessionLock;
@@ -2089,7 +2131,7 @@ export async function createEmbeddedAttemptSessionLockController(params: {
       if (cleanupParams?.session) {
         await waitForSessionEventQueue(cleanupParams.session);
       }
-      return await runLockLifecycle(async () => {
+      const acquire = async () => {
         if (takeoverDetected) {
           return noopLock;
         }
@@ -2107,7 +2149,10 @@ export async function createEmbeddedAttemptSessionLockController(params: {
           throw err;
         }
         return cleanupLock;
-      });
+      };
+      return activeWriteLock.getStore()?.scope.active === true
+        ? await acquire()
+        : await runLockLifecycle(acquire);
     },
     hasSessionTakeover(): boolean {
       return takeoverDetected;
