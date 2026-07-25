@@ -89,6 +89,14 @@ reduced physical writes by 1.4% in this mixed fixture. These are pre-
 implementation harness results; the same command must be rerun against the
 production implementation before deployment.
 
+Phase 1 production code was then measured through the same checked-out-source
+path for five fresh-process repetitions. Median throughput increased from 8.30
+to 10.23 ops/s and event-loop p99 fell from 80.67 to 25.23 ms, but incremental
+RSS rose from 166.24 to 217.96 MiB while whole-store session rewrites remained.
+This clears the event-loop gate for the worker and confirms that Phase 2 is
+still required for the memory target; the worker-only state must not be
+deployed as the final performance configuration.
+
 Phase 1 may move trajectory maintenance to one worker after that reproduction.
 Phase 2 remains the target architecture for session metadata, but activation is
 gated on post-Phase-1 measurements, a complete direct-consumer audit, and a

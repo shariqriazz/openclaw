@@ -43,7 +43,7 @@ const profile = process.argv.includes("--smoke")
 const repetitionsArg = process.argv.find((arg) => arg.startsWith("--repetitions="));
 const repetitions = Math.max(1, Number(repetitionsArg?.split("=")[1] ?? 5));
 const concurrency = 16;
-const variants: VariantId[] = [
+const allVariants: VariantId[] = [
   "source",
   "current",
   "worker",
@@ -53,6 +53,13 @@ const variants: VariantId[] = [
   "batch-worker",
   "sqlite-worker",
 ];
+const variantsArg = process.argv.find((arg) => arg.startsWith("--variants="));
+const requestedVariants = variantsArg
+  ?.slice("--variants=".length)
+  .split(",")
+  .filter((variant): variant is VariantId => allVariants.includes(variant as VariantId));
+const variants =
+  requestedVariants && requestedVariants.length > 0 ? requestedVariants : allVariants;
 
 function percentile(values: number[], ratio: number): number {
   if (values.length === 0) {
@@ -530,7 +537,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const rootArg = process.argv.find((arg) => arg.startsWith("--root="));
   if (childVariantArg && rootArg) {
     const childVariant = childVariantArg.slice("--child=".length) as VariantId;
-    if (!variants.includes(childVariant)) {
+    if (!allVariants.includes(childVariant)) {
       throw new Error(`unknown benchmark variant: ${childVariant}`);
     }
     const sample = await runVariant(rootArg.slice("--root=".length), childVariant);

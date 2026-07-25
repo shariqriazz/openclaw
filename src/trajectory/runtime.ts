@@ -1,14 +1,12 @@
 // Trajectory runtime records runtime events into trajectory log files.
 import fs from "node:fs";
 import path from "node:path";
-import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { sanitizeDiagnosticPayload } from "../agents/payload-redaction.js";
 import type {
   QueuedFileWriter,
   QueuedFileWriterDiagnostics,
 } from "../agents/queued-file-writer.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { assertNoSymlinkParents, writeSiblingTempFile } from "../infra/fs-safe-advanced.js";
 import { readRegularFileSync } from "../infra/fs-safe.js";
 import { redactSecrets } from "../logging/redact.js";
 import { parseBooleanValue } from "../utils/boolean.js";
@@ -21,6 +19,10 @@ import {
   resolveTrajectoryPointerFilePath,
   resolveTrajectoryPointerOpenFlags,
 } from "./paths.js";
+import {
+  describeTrajectoryRuntimeWorker,
+  replaceTrajectoryWindowWithWorker,
+} from "./runtime-worker-client.js";
 import type { TrajectoryEvent, TrajectoryToolDefinition } from "./types.js";
 
 type TrajectoryRuntimeInit = {
@@ -47,7 +49,6 @@ type TrajectoryRuntimeRecorder = {
 };
 
 const writers = new Map<string, TrajectoryRuntimeWriter>();
-const windowFlushes = new KeyedAsyncQueue();
 const MAX_TRAJECTORY_WRITERS = 100;
 const TRAJECTORY_RUNTIME_DATA_STRING_MAX_CHARS = 32_768;
 const TRAJECTORY_RUNTIME_DATA_ARRAY_MAX_ITEMS = 64;
@@ -289,31 +290,6 @@ function trimJsonlWindow(lines: string[], maxBytes: number): number {
   return bytes;
 }
 
-function compareTrajectoryWindowLines(left: string, right: string): number {
-  const leftEvent = parseTrajectoryWindowLine(left);
-  const rightEvent = parseTrajectoryWindowLine(right);
-  const byTs = leftEvent.ts - rightEvent.ts;
-  if (byTs !== 0) {
-    return byTs;
-  }
-  return leftEvent.seq - rightEvent.seq;
-}
-
-function parseTrajectoryWindowLine(line: string): { ts: number; seq: number } {
-  try {
-    const parsed = JSON.parse(line) as { ts?: unknown; sourceSeq?: unknown; seq?: unknown };
-    const ts = typeof parsed.ts === "string" ? Date.parse(parsed.ts) : Number.POSITIVE_INFINITY;
-    const sourceSeq = typeof parsed.sourceSeq === "number" ? parsed.sourceSeq : undefined;
-    const seq = typeof parsed.seq === "number" ? parsed.seq : undefined;
-    return {
-      ts: Number.isFinite(ts) ? ts : Number.POSITIVE_INFINITY,
-      seq: sourceSeq ?? seq ?? Number.POSITIVE_INFINITY,
-    };
-  } catch {
-    return { ts: Number.POSITIVE_INFINITY, seq: Number.POSITIVE_INFINITY };
-  }
-}
-
 function readMaxTrajectorySourceSeq(filePath: string): number {
   return readTrajectoryWindowLines(filePath, TRAJECTORY_RUNTIME_FILE_MAX_BYTES).reduce(
     (max, line) => {
@@ -351,50 +327,6 @@ function readTrajectoryWindowLines(filePath: string, maxBytes: number): string[]
   }
 }
 
-async function replaceTrajectoryWindow(params: {
-  filePath: string;
-  maxFileBytes: number;
-  appendedLines: string[];
-}): Promise<void> {
-  const dir = path.dirname(params.filePath);
-  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
-  await assertNoSymlinkParents({
-    rootDir: path.parse(path.resolve(dir)).root,
-    targetPath: path.resolve(dir),
-    allowMissing: false,
-    allowRootChildSymlink: true,
-    requireDirectories: true,
-    messagePrefix: "Refusing to write trajectory under",
-  });
-  const lines = readTrajectoryWindowLines(params.filePath, params.maxFileBytes);
-  lines.push(...params.appendedLines);
-  lines.sort(compareTrajectoryWindowLines);
-  trimJsonlWindow(lines, params.maxFileBytes);
-  await writeSiblingTempFile({
-    dir,
-    chmodDir: false,
-    mode: 0o600,
-    tempPrefix: ".openclaw-trajectory-",
-    writeTemp: async (tempPath) => {
-      await fs.promises.writeFile(tempPath, lines.join(""), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-    },
-    resolveFinalPath: () => params.filePath,
-  });
-}
-
-async function queueTrajectoryWindowFlush(params: {
-  filePath: string;
-  maxFileBytes: number;
-  appendedLines: string[];
-}): Promise<void> {
-  await windowFlushes.enqueue(params.filePath, async () => {
-    await replaceTrajectoryWindow(params);
-  });
-}
-
 function createTrajectoryWindowWriter(
   filePath: string,
   maxFileBytes: number,
@@ -430,7 +362,7 @@ function createTrajectoryWindowWriter(
       queue = queue
         .then(async () => {
           activeOperation = "file-replace";
-          await queueTrajectoryWindowFlush({
+          await replaceTrajectoryWindowWithWorker({
             filePath,
             maxFileBytes,
             appendedLines,
@@ -444,8 +376,8 @@ function createTrajectoryWindowWriter(
       await queue;
     },
     describeQueue: () => ({
-      pendingWrites,
-      queuedBytes,
+      pendingWrites: Math.max(pendingWrites, describeTrajectoryRuntimeWorker().pendingWrites),
+      queuedBytes: Math.max(queuedBytes, describeTrajectoryRuntimeWorker().queuedBytes),
       activeOperation,
       maxFileBytes,
       maxQueuedBytes: maxFileBytes,
