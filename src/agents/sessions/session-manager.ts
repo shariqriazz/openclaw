@@ -739,11 +739,16 @@ function rememberAppendedSessionEntry(
 function publishRememberedSessionFileSnapshot(
   filePath: string,
   snapshot: SessionFileSnapshot | undefined,
+  publishedEntries?: readonly OwnedSessionTranscriptPublishedEntry[],
 ): void {
   if (!snapshot) {
     return;
   }
-  const published = publishOwnedSessionFileSnapshot({ sessionFile: filePath, snapshot });
+  const published = publishOwnedSessionFileSnapshot({
+    sessionFile: filePath,
+    snapshot,
+    publishedEntries,
+  });
   if (published === false) {
     sessionEntriesCache.delete(resolve(filePath));
     invalidateSessionFileRepairCache(filePath);
@@ -2178,7 +2183,9 @@ export class SessionManager {
       );
       this.sessionFileSnapshot = rememberedAppend.snapshot;
       if (rememberedAppend.ownedAppendVerified && publishSnapshot) {
-        publishRememberedSessionFileSnapshot(this.sessionFile, rememberedAppend.snapshot);
+        publishRememberedSessionFileSnapshot(this.sessionFile, rememberedAppend.snapshot, [
+          { kind: "serialized", serialized: serializedEntry.slice(0, -1) },
+        ]);
       } else if (cacheOwnedAppend) {
         this.setLoadedSessionFile(
           this.sessionFile,

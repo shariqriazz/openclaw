@@ -396,6 +396,10 @@ describe("SessionManager.open", () => {
       maxCachedSessionBytes,
     );
     expect(publishSessionFileSnapshot).toHaveBeenCalledTimes(1);
+    const appendedLine = (await fs.readFile(sessionFile, "utf8")).trimEnd().split("\n").at(-1);
+    expect(publishSessionFileSnapshot.mock.calls[0]?.[1]).toEqual([
+      { kind: "serialized", serialized: appendedLine },
+    ]);
   });
 
   it("invalidates warm entries after an append outside the owned write context", async () => {

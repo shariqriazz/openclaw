@@ -1155,7 +1155,10 @@ export class EmbeddedAttemptSessionTakeoverError extends Error {
 
 export type EmbeddedAttemptSessionLockController = {
   canAdvanceSessionEntryCache(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
-  publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
+  publishOwnedSessionFileSnapshot(
+    snapshot: OwnedSessionTranscriptCacheSnapshot,
+    publishedEntries?: readonly OwnedSessionTranscriptPublishedEntry[],
+  ): boolean;
   publishValidatedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
   readTrustedCurrentSessionFileSnapshot(): Promise<TrustedSessionFileSnapshot | undefined>;
   releaseForPrompt(): Promise<void>;
@@ -1184,9 +1187,6 @@ export async function createEmbeddedAttemptSessionLockController(params: {
     entries: readonly PromptReleasedSessionEntry[],
   ) => Promise<PromptReleasedSessionMergeResult | void> | PromptReleasedSessionMergeResult | void;
   reloadPromptReleasedSessionFile?: () => Promise<void> | void;
-  recognizeAttemptOwnedSessionEntries?: (
-    entries: readonly PromptReleasedSessionEntry[],
-  ) => Promise<boolean> | boolean;
 }): Promise<EmbeddedAttemptSessionLockController> {
   const acquireLock = async (signal?: AbortSignal): Promise<SessionLock> =>
     await params.acquireSessionWriteLock({
@@ -1537,33 +1537,6 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         ),
       );
       return;
-    }
-
-    // A Pi listener may finish a valid message append immediately before the
-    // next provider request releases the lock. Recover only entries already
-    // present byte-for-byte in this attempt's SessionManager.
-    if (params.recognizeAttemptOwnedSessionEntries) {
-      const attemptOwnedChange = await classifySessionFenceChange({
-        sessionFile: params.lockOptions.sessionFile,
-        previous: fenceSnapshot,
-        current,
-        allowAnyMessage: true,
-      });
-      if (
-        attemptOwnedChange &&
-        (await params.recognizeAttemptOwnedSessionEntries(attemptOwnedChange.entries))
-      ) {
-        fenceSnapshot = await readSessionFileFenceSnapshot(params.lockOptions.sessionFile);
-        fenceFingerprint = fenceSnapshot.fingerprint;
-        setFenceGeneration(
-          recordOwnedSessionFileWrite(
-            sessionFileFenceKey,
-            fenceSnapshot.fingerprint,
-            attemptOwnedChange.publishedEntries,
-          ),
-        );
-        return;
-      }
     }
 
     takeoverDetected = true;
@@ -1985,7 +1958,10 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         isTrustedSessionFileState(sessionFileFenceKey, fingerprint)
       );
     },
-    publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean {
+    publishOwnedSessionFileSnapshot(
+      snapshot: OwnedSessionTranscriptCacheSnapshot,
+      publishedEntries?: readonly OwnedSessionTranscriptPublishedEntry[],
+    ): boolean {
       const state = activeWriteLock.getStore();
       if (takeoverDetected || state?.active !== true || !state.scope.active) {
         return false;
@@ -1995,7 +1971,11 @@ export async function createEmbeddedAttemptSessionLockController(params: {
       if (!sameSessionFileFingerprint(fingerprint, current)) {
         return false;
       }
-      const generation = recordOwnedSessionFileWrite(sessionFileFenceKey, current);
+      const generation = recordOwnedSessionFileWrite(
+        sessionFileFenceKey,
+        current,
+        publishedEntries,
+      );
       if (fenceActive) {
         fenceFingerprint = current;
         fenceSnapshot = { fingerprint: current };
@@ -2155,7 +2135,10 @@ export function installPromptSubmissionLockRelease(params: {
     options?: OwnedSessionTranscriptWriteOptions<T>,
   ) => Promise<T>;
   canAdvanceSessionEntryCache?: (snapshot: OwnedSessionTranscriptCacheSnapshot) => boolean;
-  publishSessionFileSnapshot?: (snapshot: OwnedSessionTranscriptCacheSnapshot) => boolean;
+  publishSessionFileSnapshot?: (
+    snapshot: OwnedSessionTranscriptCacheSnapshot,
+    publishedEntries?: readonly OwnedSessionTranscriptPublishedEntry[],
+  ) => boolean;
 }): void {
   const agent = (params.session as SessionWithAgentPrompt).agent;
   if (typeof agent?.streamFn !== "function") {
