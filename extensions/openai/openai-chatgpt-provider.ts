@@ -51,7 +51,6 @@ const OPENAI_CODEX_BASE_URL = OPENAI_CODEX_RESPONSES_BASE_URL;
 const OPENAI_CODEX_LOGIN_ASSISTANT_PRIORITY = -30;
 const OPENAI_CODEX_DEVICE_PAIRING_ASSISTANT_PRIORITY = -10;
 const OPENAI_CODEX_GPT_56_MODEL_IDS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
-const OPENAI_CODEX_GPT_56_WIDE_SUFFIX = "-1m";
 const OPENAI_CODEX_GPT_56_THINKING_LEVEL_MAP = {
   off: null,
   xhigh: "xhigh",
@@ -64,8 +63,7 @@ const OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID = "gpt-5.4-codex";
 const OPENAI_CODEX_GPT_54_MINI_MODEL_ID = "gpt-5.4-mini";
 const OPENAI_CODEX_GPT_54_PRO_MODEL_ID = "gpt-5.4-pro";
 const OPENAI_CODEX_GPT_56_CONTEXT_TOKENS = 372_000;
-const OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW = 1_050_000;
-const OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS = 922_000;
+const OPENAI_CODEX_GPT_56_CONTEXT_WINDOW = 1_050_000;
 const OPENAI_CODEX_GPT_55_CODEX_CONTEXT_TOKENS = 400_000;
 const OPENAI_CODEX_GPT_55_DEFAULT_RUNTIME_CONTEXT_TOKENS = 272_000;
 const OPENAI_CODEX_GPT_55_PRO_NATIVE_CONTEXT_TOKENS = 1_000_000;
@@ -207,21 +205,14 @@ function resolveGpt56CodexVariant(modelId: string):
     }
   | undefined {
   const lowerModelId = normalizeLowercaseStringOrEmpty(modelId);
-  const wide = lowerModelId.endsWith(OPENAI_CODEX_GPT_56_WIDE_SUFFIX);
-  const canonicalModelId = (
-    wide ? lowerModelId.slice(0, -OPENAI_CODEX_GPT_56_WIDE_SUFFIX.length) : lowerModelId
-  ) as (typeof OPENAI_CODEX_GPT_56_MODEL_IDS)[number];
+  const canonicalModelId = lowerModelId as (typeof OPENAI_CODEX_GPT_56_MODEL_IDS)[number];
   if (!OPENAI_CODEX_GPT_56_MODEL_IDS.includes(canonicalModelId)) {
     return undefined;
   }
   return {
     canonicalModelId,
-    contextWindow: wide
-      ? OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW
-      : OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
-    contextTokens: wide
-      ? OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS
-      : OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
+    contextWindow: OPENAI_CODEX_GPT_56_CONTEXT_WINDOW,
+    contextTokens: OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
   };
 }
 
@@ -716,20 +707,6 @@ export function buildOpenAICodexProviderHooks(): Pick<
         templateIds: OPENAI_CODEX_GPT_55_PRO_TEMPLATE_MODEL_IDS,
       });
       return [
-        ...OPENAI_CODEX_GPT_56_MODEL_IDS.map((modelId) => {
-          const template = findCatalogTemplate({
-            entries: ctx.entries,
-            providerId: PROVIDER_ID,
-            templateIds: [modelId],
-          });
-          return buildOpenAISyntheticCatalogEntry(template, {
-            id: `${modelId}${OPENAI_CODEX_GPT_56_WIDE_SUFFIX}`,
-            reasoning: true,
-            input: ["text", "image"],
-            contextWindow: OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW,
-            contextTokens: OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS,
-          });
-        }),
         buildOpenAISyntheticCatalogEntry(gpt55ProTemplate, {
           id: OPENAI_CODEX_GPT_55_PRO_MODEL_ID,
           reasoning: true,

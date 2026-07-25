@@ -111,34 +111,10 @@ describe("OpenAI provider Codex transport hooks", () => {
         api: "openai-chatgpt-responses",
         baseUrl: "https://chatgpt.com/backend-api/codex",
         input: ["text", "image"],
-        contextWindow: 372_000,
+        contextWindow: 1_050_000,
         contextTokens: 372_000,
         maxTokens: 128_000,
         thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
-      });
-    },
-  );
-
-  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
-    "resolves internal %s-1m through its canonical wire model",
-    (canonicalModelId) => {
-      const provider = buildOpenAIProvider();
-
-      const model = provider.resolveDynamicModel?.({
-        provider: "openai",
-        modelId: `${canonicalModelId}-1m`,
-        authProfileMode: "oauth",
-        modelRegistry: { find: () => null },
-      } as never);
-
-      expect(model).toMatchObject({
-        provider: "openai",
-        id: canonicalModelId,
-        api: "openai-chatgpt-responses",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-        contextWindow: 1_050_000,
-        contextTokens: 922_000,
-        maxTokens: 128_000,
       });
     },
   );
