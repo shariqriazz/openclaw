@@ -35,6 +35,12 @@ import { collectTextContentBlocks } from "../content-blocks.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "../copilot-dynamic-headers.js";
 import { isTimeoutError } from "../failover-error.js";
 import { stripRuntimeContextCustomMessages } from "../internal-runtime-context.js";
+import {
+  findOpenAIServerCompactionState,
+  requestOpenAIServerCompaction,
+  supportsOpenAIServerCompaction,
+  type OpenAIServerCompactionDetails,
+} from "../openai-server-compaction.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
 import type { ExtensionAPI, ExtensionContext, FileOperations } from "../sessions/index.js";
@@ -55,6 +61,7 @@ import {
   getCompactionSafeguardRuntime,
   setCompactionSafeguardCancelReason,
 } from "./compaction-safeguard-runtime.js";
+import { getOpenAIRequestShape } from "./openai-server-compaction.js";
 
 const log = createSubsystemLogger("compaction-safeguard");
 
@@ -1074,6 +1081,33 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     }
     const apiKey = authResult.apiKey ?? "";
     const authHeaders = authResult.headers;
+    const fullBranchMessages = stripRuntimeContextCustomMessages(
+      collectSessionBranchMessages(ctx.sessionManager),
+    );
+    const priorRemoteState = supportsOpenAIServerCompaction(model)
+      ? findOpenAIServerCompactionState({
+          branchEntries: event.branchEntries,
+          model,
+        })
+      : undefined;
+    const remoteCompaction = supportsOpenAIServerCompaction(model)
+      ? requestOpenAIServerCompaction({
+          model,
+          apiKey,
+          headers: authHeaders,
+          sessionId: ctx.sessionManager.getSessionId(),
+          messages: fullBranchMessages,
+          priorState: priorRemoteState,
+          systemPrompt: ctx.getSystemPrompt(),
+          allTools: api.getAllTools(),
+          activeToolNames: api.getActiveTools(),
+          requestShape: getOpenAIRequestShape(ctx.sessionManager),
+          signal,
+        }).then(
+          (details) => ({ details }),
+          (error: unknown) => ({ error }),
+        )
+      : undefined;
 
     try {
       const modelContextWindow = resolveContextWindowTokens(model);
@@ -1314,13 +1348,28 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       });
       const bodyToCap = lastHistorySummary || summary;
       summary = capCompactionSummaryPreservingSuffix(bodyToCap, suffix);
+      const remoteCompactionOutcome = await remoteCompaction;
+      let remoteCompactionDetails: OpenAIServerCompactionDetails | undefined;
+      if (remoteCompactionOutcome && "details" in remoteCompactionOutcome) {
+        remoteCompactionDetails = remoteCompactionOutcome.details;
+      } else if (remoteCompactionOutcome && !signal?.aborted) {
+        log.warn(
+          `OpenAI server compaction failed; retaining local compaction: ${formatErrorMessage(
+            remoteCompactionOutcome.error,
+          )}`,
+        );
+      }
 
       return {
         compaction: {
           summary,
           firstKeptEntryId: preparation.firstKeptEntryId,
           tokensBefore: preparation.tokensBefore,
-          details: { readFiles, modifiedFiles },
+          details: {
+            readFiles,
+            modifiedFiles,
+            ...(remoteCompactionDetails ? { remoteCompaction: remoteCompactionDetails } : {}),
+          },
         },
       };
     } catch (error) {

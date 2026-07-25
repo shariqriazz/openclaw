@@ -38,6 +38,7 @@ import {
   mockedGetApiKeyForModel,
   mockedIsLikelyContextOverflowError,
   mockedMarkAuthProfileSuccess,
+  mockedNativeCompactDirect,
   mockedPickFallbackThinkingLevel,
   mockedResolveAuthProfileOrder,
   mockedResolveContextWindowInfo,
@@ -2211,6 +2212,49 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       currentTokenCount: 272_537,
       compactionTarget: "threshold",
       targetPromptTokens: 272_000,
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs OpenAI server compaction after stateful engine overflow recovery", async () => {
+    mockedContextEngine.info.ownsCompaction = true;
+    mockedResolveModelAsync.mockResolvedValue({
+      model: {
+        id: "gpt-5.6-sol",
+        provider: "openai",
+        contextWindow: 1_050_000,
+        api: "openai-chatgpt-responses",
+        reasoning: true,
+      },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    });
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: makeOverflowError() }))
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+    mockedCompactDirect.mockResolvedValueOnce(
+      makeCompactionSuccess({
+        tokensBefore: 272_537,
+        tokensAfter: 130_000,
+      }),
+    );
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      agentHarnessRuntimeOverride: "openclaw",
+    });
+
+    expect(mockedNativeCompactDirect).toHaveBeenCalledOnce();
+    expectMockCallFields(mockedNativeCompactDirect, {
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      agentHarnessId: "openclaw",
+      contextTokenBudget: 200_000,
+      force: true,
+      trigger: "budget",
     });
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
   });

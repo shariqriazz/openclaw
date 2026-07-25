@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { getCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import contextPruningExtension from "../agent-hooks/context-pruning.js";
+import openAIServerCompactionExtension from "../agent-hooks/openai-server-compaction.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({
@@ -124,6 +125,24 @@ describe("buildEmbeddedExtensionFactories", () => {
     expect(getCompactionSafeguardRuntime(sessionManager)?.workspaceDir).toBe(
       "/tmp/openclaw-workspace",
     );
+  });
+
+  it("adds server-compaction replay only for OpenAI Responses models", () => {
+    const model = {
+      id: "gpt-5.6-sol",
+      api: "openai-chatgpt-responses",
+      provider: "openai",
+      contextWindow: 1_050_000,
+    } as Model;
+    const factories = buildEmbeddedExtensionFactories({
+      cfg: {},
+      sessionManager: {} as SessionManager,
+      provider: "openai",
+      modelId: model.id,
+      model,
+    });
+
+    expect(factories).toContain(openAIServerCompactionExtension);
   });
 
   it("enables cache-ttl pruning for custom anthropic-messages providers", () => {

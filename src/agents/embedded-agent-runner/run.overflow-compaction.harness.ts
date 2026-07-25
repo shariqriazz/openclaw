@@ -115,6 +115,15 @@ export const mockedContextEngine = {
 };
 
 export const mockedCompactDirect = mockedContextEngine.compact;
+export const mockedNativeCompactDirect = vi.fn(async () => ({
+  ok: true as const,
+  compacted: true as const,
+  result: {
+    summary: "OpenAI server compacted",
+    firstKeptEntryId: "entry-native",
+    tokensBefore: 100,
+  },
+}));
 export const mockedResolveContextEngine = vi.fn(async () => mockedContextEngine);
 export const mockedResolveContextEngineOwnerPluginId = vi.fn(() => undefined);
 export const mockedBuildAgentRuntimePlan = vi.fn(() => ({}));
@@ -338,6 +347,16 @@ export function resetRunOverflowCompactionHarnessMocks(): void {
     ok: false,
     compacted: false,
     reason: "nothing to compact",
+  });
+  mockedNativeCompactDirect.mockReset();
+  mockedNativeCompactDirect.mockResolvedValue({
+    ok: true,
+    compacted: true,
+    result: {
+      summary: "OpenAI server compacted",
+      firstKeptEntryId: "entry-native",
+      tokensBefore: 100,
+    },
   });
 
   mockedEnsureRuntimePluginsLoaded.mockReset();
@@ -797,6 +816,10 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("./compaction-hooks.js", () => ({
     runPostCompactionSideEffects: mockedRunPostCompactionSideEffects,
+  }));
+
+  vi.doMock("./compact.runtime.js", () => ({
+    compactEmbeddedAgentSessionDirect: mockedNativeCompactDirect,
   }));
 
   vi.doMock("./utils.js", async () => {

@@ -128,6 +128,10 @@ import {
   resolveContextConfigProviderForRuntime,
   resolveSelectedOpenAIRuntimeProvider,
 } from "../openai-routing.js";
+import {
+  hasOpenAIServerCompactionDetails,
+  supportsOpenAIServerCompaction,
+} from "../openai-server-compaction.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { hasOnlyAssistantReasoningContent } from "../replay-turn-classification.js";
 import { runAgentCleanupStep } from "../run-cleanup-timeout.js";
@@ -150,6 +154,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS } from "../timeout.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { deriveContextPromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
+import { compactEmbeddedAgentSessionDirect } from "./compact.runtime.js";
 import { runPostCompactionSideEffects } from "./compaction-hooks.js";
 import { buildEmbeddedCompactionRuntimeContext } from "./compaction-runtime-context.js";
 import {
@@ -1977,6 +1982,77 @@ async function runEmbeddedAgentInternal(
             log.warn(`after_compaction hook failed during ${reason}: ${String(hookErr)}`);
           }
         };
+        const runOpenAIServerCompactionAfterContextEngine = async (
+          reason: string,
+          compactResult: Awaited<ReturnType<typeof contextEngine.compact>>,
+        ) => {
+          if (
+            contextEngine.info.ownsCompaction !== true ||
+            !compactResult.ok ||
+            !compactResult.compacted ||
+            agentHarness.id !== "openclaw" ||
+            !supportsOpenAIServerCompaction(runtimeModel) ||
+            hasOpenAIServerCompactionDetails(compactResult.result?.details)
+          ) {
+            return;
+          }
+          let nativeResult: Awaited<ReturnType<typeof compactEmbeddedAgentSessionDirect>>;
+          try {
+            nativeResult = await compactEmbeddedAgentSessionDirect({
+              sessionId: activeSessionId,
+              sessionKey: params.sessionKey,
+              sessionFile: activeSessionFile,
+              runId: params.runId,
+              agentId: params.agentId,
+              sandboxSessionKey: params.sandboxSessionKey,
+              workspaceDir: resolvedWorkspace,
+              cwd: params.cwd,
+              agentDir,
+              config: params.config,
+              skillsSnapshot: params.skillsSnapshot,
+              senderIsOwner: params.senderIsOwner,
+              provider,
+              model: modelId,
+              modelFallbacksOverride: params.modelFallbacksOverride,
+              agentHarnessId: agentHarness.id,
+              thinkLevel,
+              reasoningLevel: params.reasoningLevel,
+              authProfileId: lastProfileId,
+              messageChannel: params.messageChannel,
+              messageProvider: params.messageProvider,
+              chatType: params.chatType,
+              agentAccountId: params.agentAccountId,
+              currentChannelId: params.currentChannelId,
+              currentThreadTs: params.currentThreadTs,
+              currentMessageId: params.currentMessageId,
+              senderId: params.senderId ?? undefined,
+              extraSystemPrompt: params.extraSystemPrompt,
+              sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+              ownerNumbers: params.ownerNumbers,
+              contextTokenBudget: ctxInfo.tokens,
+              tokenBudget: ctxInfo.tokens,
+              force: true,
+              trigger: "budget",
+              abortSignal: params.abortSignal,
+            });
+          } catch (error) {
+            log.warn(
+              `OpenAI server compaction threw after ${reason} for ${provider}/${modelId}: ${String(error)}`,
+            );
+            return;
+          }
+          if (!nativeResult.ok || !nativeResult.compacted) {
+            log.warn(
+              `OpenAI server compaction did not complete after ${reason} for ${provider}/${modelId}: ` +
+                `${nativeResult.reason ?? "nothing to compact"}`,
+            );
+            return;
+          }
+          adoptActiveSessionId(nativeResult.result?.sessionId);
+          if (nativeResult.result?.sessionFile) {
+            activeSessionFile = nativeResult.result.sessionFile;
+          }
+        };
         let authRetryPending = false;
         let accumulatedReplayState = createEmbeddedRunReplayState();
         // Hoisted so the retry-limit error path can use the most recent API total.
@@ -2687,6 +2763,10 @@ async function runEmbeddedAgentInternal(
                     sessionFile: activeSessionFile,
                   });
                 }
+                await runOpenAIServerCompactionAfterContextEngine(
+                  "timeout recovery",
+                  timeoutCompactResult,
+                );
                 log.info(
                   `[timeout-compaction] compaction succeeded for ${provider}/${modelId}; retrying prompt`,
                 );
@@ -2976,6 +3056,10 @@ async function runEmbeddedAgentInternal(
                     );
                   }
                 }
+                await runOpenAIServerCompactionAfterContextEngine(
+                  "overflow recovery",
+                  compactResult,
+                );
                 autoCompactionCount += 1;
                 log.info(`auto-compaction succeeded for ${provider}/${modelId}; retrying prompt`);
                 postCompactionGuard.armPostCompaction();

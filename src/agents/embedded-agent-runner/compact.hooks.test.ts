@@ -6,6 +6,7 @@ import {
   applyAgentCompactionSettingsFromConfigMock,
   buildEmbeddedSystemPromptMock,
   contextEngineCompactMock,
+  compactAfterContextEngineMock,
   compactWithSafetyTimeoutMock,
   createAgentSessionMock,
   createPreparedEmbeddedAgentSettingsManagerMock,
@@ -2111,6 +2112,49 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       runtimeProvider: undefined,
       model: "gpt-5.5",
     });
+  });
+
+  it("runs OpenAI server compaction after an owning context engine on the OpenClaw runtime", async () => {
+    resolveModelMock.mockReturnValue({
+      model: {
+        provider: "openai",
+        api: "openai-chatgpt-responses",
+        id: "gpt-5.6-sol",
+        input: ["text"],
+      },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    });
+    compactAfterContextEngineMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: {
+        summary: "server compacted",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 100,
+      },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentHarnessId: "openclaw",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(contextEngineCompactMock).toHaveBeenCalledOnce();
+    expect(compactAfterContextEngineMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentHarnessId: "openclaw",
+        force: true,
+      }),
+    );
+    expect(maybeCompactAgentHarnessSessionMock).not.toHaveBeenCalled();
   });
 
   it("uses concrete Codex pins on canonical OpenAI for queued compaction", async () => {

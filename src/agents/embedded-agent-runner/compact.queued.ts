@@ -36,8 +36,10 @@ import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
 import { resolveAgentHarnessPolicy } from "../harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { isOpenAIProvider } from "../openai-routing.js";
+import { hasOpenAIServerCompactionDetails } from "../openai-server-compaction.js";
 import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
 import { DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON } from "./compact-reasons.js";
+import { compactEmbeddedAgentSessionDirect } from "./compact.runtime.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
 import { asCompactionHookRunner, runPostCompactionSideEffects } from "./compaction-hooks.js";
 import {
@@ -250,8 +252,16 @@ export async function compactEmbeddedAgentSession(
   const ceRuntimeProvider = resolvedCompactionTarget.runtimeProvider ?? ceProvider;
   const ceContextConfigProvider = resolvedCompactionTarget.contextProvider ?? ceProvider;
   const ceModelId = resolvedCompactionTarget.model ?? DEFAULT_MODEL;
+  const { model: ceModel } = await resolveModelAsync(
+    ceRuntimeProvider,
+    ceModelId,
+    agentDir,
+    params.config,
+  );
+  const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
   const attemptNativeHarnessCompaction = shouldAttemptNativeHarnessCompaction({
     provider: ceProvider,
+    modelApi: ceRuntimeModel?.api,
     nativeHarnessCompaction: resolvedCompactionTarget.nativeHarnessCompaction,
     selectedHarnessRuntime,
   });
@@ -266,13 +276,6 @@ export async function compactEmbeddedAgentSession(
       workspaceDir: resolvedWorkspaceDir,
     });
   }
-  const { model: ceModel } = await resolveModelAsync(
-    ceRuntimeProvider,
-    ceModelId,
-    agentDir,
-    params.config,
-  );
-  const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
   const resolvedContextTokenBudget =
     normalizeContextTokenBudget(
       resolveContextWindowInfo({
@@ -561,17 +564,25 @@ export async function compactEmbeddedAgentSession(
             // The native bridge owns its terminal-event watchdog. Keep this lane held until
             // that bridge settles; an outer timeout would release transcript ownership while
             // the harness could still be compacting the same session.
-            secondaryNativeHarnessCompaction = await maybeCompactAgentHarnessSession(
-              {
-                ...params,
-                sessionId: postCompactionSessionId,
-                sessionFile: postCompactionSessionFile,
-                contextEngine,
-                contextTokenBudget,
-                contextEngineRuntimeContext,
-              },
-              { nativeCompactionRequest: "after_context_engine" },
-            );
+            const compactParams = {
+              ...params,
+              sessionId: postCompactionSessionId,
+              sessionFile: postCompactionSessionFile,
+              contextEngine,
+              contextTokenBudget,
+              contextEngineRuntimeContext,
+              force: true,
+            };
+            const selectedRuntime = normalizeOptionalAgentRuntimeId(selectedHarnessRuntime);
+            secondaryNativeHarnessCompaction =
+              (selectedRuntime === undefined ||
+                selectedRuntime === "auto" ||
+                selectedRuntime === "openclaw") &&
+              !hasOpenAIServerCompactionDetails(result.result?.details)
+                ? await compactEmbeddedAgentSessionDirect(compactParams)
+                : await maybeCompactAgentHarnessSession(compactParams, {
+                    nativeCompactionRequest: "after_context_engine",
+                  });
             if (secondaryNativeHarnessCompaction && !secondaryNativeHarnessCompaction.ok) {
               log.warn(
                 "secondary native harness compaction failed after context-engine compaction",
@@ -631,10 +642,20 @@ export async function compactEmbeddedAgentSession(
 
 function shouldAttemptNativeHarnessCompaction(params: {
   provider: string;
+  modelApi?: string;
   nativeHarnessCompaction?: boolean;
   selectedHarnessRuntime?: string | null;
 }): boolean {
   const selectedRuntime = normalizeOptionalAgentRuntimeId(params.selectedHarnessRuntime);
+  if (
+    isOpenAIProvider(params.provider) &&
+    (selectedRuntime === undefined ||
+      selectedRuntime === "auto" ||
+      selectedRuntime === "openclaw") &&
+    (params.modelApi === "openai-chatgpt-responses" || params.modelApi === "openai-responses")
+  ) {
+    return params.nativeHarnessCompaction !== false;
+  }
   if (!selectedRuntime || selectedRuntime === "auto" || selectedRuntime === "openclaw") {
     return false;
   }

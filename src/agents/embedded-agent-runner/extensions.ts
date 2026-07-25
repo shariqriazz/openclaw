@@ -11,6 +11,7 @@ import contextPruningExtension from "../agent-hooks/context-pruning.js";
 import { setContextPruningRuntime } from "../agent-hooks/context-pruning/runtime.js";
 import { computeEffectiveSettings } from "../agent-hooks/context-pruning/settings.js";
 import { makeToolPrunablePredicate } from "../agent-hooks/context-pruning/tools.js";
+import openAIServerCompactionExtension from "../agent-hooks/openai-server-compaction.js";
 import { resolveEffectiveCompactionMode } from "../agent-settings.js";
 import {
   finalizeToolTerminalPresentation,
@@ -207,6 +208,12 @@ export function buildEmbeddedExtensionFactories(params: {
       provider: compactionCfg?.provider,
     });
     factories.push(compactionSafeguardExtension);
+  }
+  if (
+    params.provider === "openai" &&
+    (params.model?.api === "openai-chatgpt-responses" || params.model?.api === "openai-responses")
+  ) {
+    factories.push(openAIServerCompactionExtension);
   }
   const pruningFactory = buildContextPruningFactory(params);
   if (pruningFactory) {
