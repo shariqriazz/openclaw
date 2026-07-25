@@ -810,6 +810,11 @@ export const replyRunRegistry: ReplyRunRegistry = {
   },
 };
 
+/** Returns whether a canonical session currently owns a reply operation. */
+export function isReplyRunActive(sessionKey: string): boolean {
+  return replyRunRegistry.isActive(sessionKey);
+}
+
 export function resolveActiveReplyRunSessionId(sessionKey: string): string | undefined {
   return replyRunRegistry.resolveSessionId(sessionKey);
 }

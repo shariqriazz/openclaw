@@ -1052,6 +1052,10 @@ async function processDiscordMessageInner(
           },
       replyOptions: {
         abortSignal,
+        allowActiveQueueResolution:
+          !isRoomEvent && !ctx.hasControlCommand && mediaList.length === 0,
+        waitForActiveQueueTranscriptCommit:
+          !isRoomEvent && !ctx.hasControlCommand && mediaList.length === 0,
         skillFilter: channelConfig?.skills,
         sourceReplyDeliveryMode,
         typingKeepalive: shouldDisableCoreTypingKeepalive ? false : undefined,

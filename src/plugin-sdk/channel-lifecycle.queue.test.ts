@@ -83,6 +83,29 @@ describe("createChannelRunQueue", () => {
     expect(onError).toHaveBeenCalledWith(taskError);
   });
 
+  it("tracks explicitly concurrent work without changing keyed ordering", async () => {
+    const keyed = createDeferred();
+    const concurrent = createDeferred();
+    const order: string[] = [];
+    const queue = createChannelRunQueue({});
+
+    queue.enqueue("same", async () => {
+      order.push("keyed");
+      await keyed.promise;
+    });
+    queue.enqueueConcurrent(async () => {
+      order.push("concurrent");
+      await concurrent.promise;
+    });
+
+    await flushAsyncWork();
+    expect(order).toHaveLength(2);
+    expect(new Set(order)).toEqual(new Set(["keyed", "concurrent"]));
+    concurrent.resolve?.();
+    keyed.resolve?.();
+    await Promise.all([concurrent.promise, keyed.promise]);
+  });
+
   it("contains reporting hook errors", async () => {
     const taskError = new Error("boom");
     const onError = vi.fn(() => {

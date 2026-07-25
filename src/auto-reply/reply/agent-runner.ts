@@ -1274,7 +1274,9 @@ export async function runReplyAgent(params: {
       {
         ...(shouldRedirect ? { deliveryMode: "redirect" as const } : {}),
         steeringMode: "all",
-        ...(opts?.onTurnAdopted ? { waitForTranscriptCommit: true } : {}),
+        ...(opts?.onTurnAdopted || opts?.waitForActiveQueueTranscriptCommit
+          ? { waitForTranscriptCommit: true }
+          : {}),
         ...(resolvedQueue.debounceMs !== undefined ? { debounceMs: resolvedQueue.debounceMs } : {}),
         ...(followupRun.userTurnTranscriptRecorder
           ? { userTurnTranscriptRecorder: followupRun.userTurnTranscriptRecorder }

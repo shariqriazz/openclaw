@@ -2,6 +2,7 @@
 import { createChannelRunQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { ClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
+import { isReplyRunActive } from "openclaw/plugin-sdk/reply-runtime";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import {
   commitDiscordInboundReplay,
@@ -31,6 +32,7 @@ type DiscordMessageRunQueue = {
 
 export type DiscordMessageRunQueueTestingHooks = {
   processDiscordMessage?: ProcessDiscordMessage;
+  isReplyRunActive?: (sessionKey: string) => boolean;
 };
 
 type SkippedQueuedMessageCleanup = () => void;
@@ -133,7 +135,7 @@ export function createDiscordMessageRunQueue(
         return;
       }
       skippedCleanup.add(cleanupSkipped);
-      runQueue.enqueue(job.queueKey, async ({ lifecycleSignal }) => {
+      const run = async ({ lifecycleSignal }: { lifecycleSignal?: AbortSignal }) => {
         // Once the task starts, normal process/commit handling owns cleanup.
         // Leaving it in skippedCleanup would double-release replay/typing state.
         skippedCleanup.delete(cleanupSkipped);
@@ -143,7 +145,18 @@ export function createDiscordMessageRunQueue(
           replayGuard,
           testing: params.testing,
         });
-      });
+      };
+      const activeReply = (params.testing?.isReplyRunActive ?? isReplyRunActive)(job.queueKey);
+      const canJoinActiveReply =
+        activeReply &&
+        job.payload.inboundEventKind === "message" &&
+        job.payload.hasControlCommand !== true &&
+        (job.payload.preparedMedia?.length ?? 0) === 0;
+      if (canJoinActiveReply) {
+        runQueue.enqueueConcurrent(run);
+      } else {
+        runQueue.enqueue(job.queueKey, run);
+      }
     },
     deactivate() {
       runQueue.deactivate();

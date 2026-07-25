@@ -489,6 +489,43 @@ describe("createDiscordMessageHandler queue behavior", () => {
     expect(lastStatusPatch?.busy).toBe(false);
   });
 
+  it("admits a same-session correction while the active reply owner is running", async () => {
+    preflightDiscordMessageMock.mockReset();
+    processDiscordMessageMock.mockReset();
+
+    const firstRun = createDeferred();
+    const correctionRun = createDeferred();
+    let activeReply = false;
+    processDiscordMessageMock
+      .mockImplementationOnce(async () => {
+        activeReply = true;
+        await firstRun.promise;
+      })
+      .mockImplementationOnce(async () => {
+        await correctionRun.promise;
+      });
+    const handler = createDiscordMessageHandler({
+      ...createDiscordHandlerParams(),
+      testing: {
+        isReplyRunActive: () => activeReply,
+      },
+    });
+    installDefaultDiscordPreflight();
+
+    await handler(createMessageData("m-active-1") as never, {} as never);
+    await flushQueueWork();
+    expect(processDiscordMessageMock).toHaveBeenCalledTimes(1);
+
+    await handler(createMessageData("m-active-2") as never, {} as never);
+    await flushQueueWork();
+    expect(processDiscordMessageMock).toHaveBeenCalledTimes(2);
+
+    correctionRun.resolve();
+    await correctionRun.promise;
+    firstRun.resolve();
+    await firstRun.promise;
+  });
+
   it("drops duplicate inbound message deliveries before they reach preflight", async () => {
     preflightDiscordMessageMock.mockReset();
     processDiscordMessageMock.mockReset();

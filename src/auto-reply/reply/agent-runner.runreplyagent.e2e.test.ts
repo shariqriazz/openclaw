@@ -328,6 +328,30 @@ describe("runReplyAgent active steering", () => {
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 
+  it("waits for transcript commit for trusted channel redirects without an adoption callback", async () => {
+    state.queueEmbeddedAgentMessageMock.mockImplementationOnce(
+      (_sessionId: string, _prompt: string, options: unknown) => {
+        expect(requireRecord(options, "embedded queue options")).toMatchObject({
+          deliveryMode: "redirect",
+          steeringMode: "all",
+          waitForTranscriptCommit: true,
+        });
+        return true;
+      },
+    );
+    const { run } = createMinimalRun({
+      opts: { waitForActiveQueueTranscriptCommit: true },
+      isActive: true,
+      isStreaming: true,
+      shouldRedirect: true,
+      resolvedQueueMode: "redirect",
+    });
+
+    await expect(run()).resolves.toBeUndefined();
+    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
+  });
+
   it("carries the prepared user-turn recorder into the embedded queue", async () => {
     state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
     const recorder = createUserTurnTranscriptRecorder({

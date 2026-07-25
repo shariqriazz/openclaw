@@ -252,6 +252,13 @@ export type GetReplyOptions = {
   queuedDeliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   /** Tracks ownership transfer when this turn later drains as a queued followup. */
   queuedFollowupLifecycle?: QueuedReplyLifecycle;
+  /**
+   * Allows authenticated channel input to resolve queue policy against an
+   * already-active canonical reply operation.
+   */
+  allowActiveQueueResolution?: boolean;
+  /** Wait until an active queue-policy turn is durably appended before returning. */
+  waitForActiveQueueTranscriptCommit?: boolean;
   /** Allow channel-owned progress UI while final/source reply delivery remains message-tool-only. */
   allowProgressCallbacksWhenSourceDeliverySuppressed?: boolean;
   /** Called when a suppressed source reply mode observes visible delivery through another path. */

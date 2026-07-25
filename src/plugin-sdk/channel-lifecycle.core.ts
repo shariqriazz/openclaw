@@ -24,6 +24,8 @@ export type ChannelRunQueueTaskContext = {
 export type ChannelRunQueue = {
   /** Enqueue work under a serialization key such as account id, thread id, or chat id. */
   enqueue: (key: string, task: (context: ChannelRunQueueTaskContext) => Promise<void>) => void;
+  /** Start work that is already owned by an active canonical session operation. */
+  enqueueConcurrent: (task: (context: ChannelRunQueueTaskContext) => Promise<void>) => void;
   /** Stop accepting meaningful work and mark the lifecycle as inactive. */
   deactivate: () => void;
 };
@@ -67,26 +69,29 @@ export function createChannelRunQueue(params: ChannelRunQueueParams): ChannelRun
       // secondary unhandled rejection from their reporting hook.
     }
   };
+  const runTask = async (
+    task: (context: ChannelRunQueueTaskContext) => Promise<void>,
+  ): Promise<void> => {
+    if (!runState.isActive()) {
+      return;
+    }
+    runState.onRunStart();
+    try {
+      if (!runState.isActive()) {
+        return;
+      }
+      await task({ lifecycleSignal: params.abortSignal });
+    } finally {
+      runState.onRunEnd();
+    }
+  };
 
   return {
     enqueue(key, task) {
-      void queue
-        .enqueue(key, async () => {
-          if (!runState.isActive()) {
-            return;
-          }
-          runState.onRunStart();
-          try {
-            // Deactivation can happen while this key waited behind older work.
-            if (!runState.isActive()) {
-              return;
-            }
-            await task({ lifecycleSignal: params.abortSignal });
-          } finally {
-            runState.onRunEnd();
-          }
-        })
-        .catch(reportError);
+      void queue.enqueue(key, () => runTask(task)).catch(reportError);
+    },
+    enqueueConcurrent(task) {
+      void runTask(task).catch(reportError);
     },
     deactivate: runState.deactivate,
   };
