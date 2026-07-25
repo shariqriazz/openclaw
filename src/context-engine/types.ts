@@ -148,6 +148,11 @@ export type CompactResult = {
   ok: boolean;
   compacted: boolean;
   reason?: string;
+  /**
+   * Engine state changed in a way that requires the host to assemble the prompt
+   * again even though no transcript compaction was performed.
+   */
+  reassembleRequired?: boolean;
   result?: {
     summary?: string;
     firstKeptEntryId?: string;

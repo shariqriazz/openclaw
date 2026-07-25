@@ -2216,6 +2216,65 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
   });
 
+  it("reassembles once when engine maintenance state changed without transcript compaction", async () => {
+    mockedContextEngine.info.ownsCompaction = true;
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          promptError: makeOverflowError(),
+          promptErrorSource: "precheck",
+          preflightRecovery: {
+            route: "compact_only",
+            source: "mid-turn",
+            estimatedPromptTokens: 324_349,
+            promptBudgetBeforeReserve: 272_000,
+            overflowTokens: 52_349,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+    mockedCompactDirect.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "exhausted deferred debt cleared; reassembly required",
+      reassembleRequired: true,
+    });
+
+    await runEmbeddedAgent(overflowBaseRunParams);
+
+    expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds repeated engine reassembly requests", async () => {
+    mockedContextEngine.info.ownsCompaction = true;
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        promptError: makeOverflowError(),
+        promptErrorSource: "precheck",
+        preflightRecovery: {
+          route: "compact_only",
+          source: "mid-turn",
+          estimatedPromptTokens: 324_349,
+          promptBudgetBeforeReserve: 272_000,
+          overflowTokens: 52_349,
+        },
+      }),
+    );
+    mockedCompactDirect.mockResolvedValue({
+      ok: false,
+      compacted: false,
+      reason: "reassembly required",
+      reassembleRequired: true,
+    });
+
+    const result = await runEmbeddedAgent(overflowBaseRunParams);
+
+    expect(mockedCompactDirect).toHaveBeenCalledTimes(3);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(4);
+    expect(result.payloads[0]?.text).toContain("Context overflow");
+  });
+
   it("runs OpenAI server compaction after stateful engine overflow recovery", async () => {
     mockedContextEngine.info.ownsCompaction = true;
     mockedResolveModelAsync.mockResolvedValue({

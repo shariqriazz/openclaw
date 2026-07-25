@@ -3005,6 +3005,21 @@ async function runEmbeddedAgentInternal(
                 }
                 continue;
               }
+              if (compactResult.reassembleRequired) {
+                log.info(
+                  `context engine requested post-recovery reassembly for ${provider}/${modelId}; retrying prompt`,
+                );
+                if (preflightRecovery?.source === "mid-turn") {
+                  continueFromCurrentTranscript();
+                } else if (
+                  params.currentMessageId !== undefined &&
+                  params.currentMessageId === lastPersistedCurrentMessageId
+                ) {
+                  nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
+                  suppressNextUserMessagePersistence = true;
+                }
+                continue;
+              }
               const compactionTokensBefore = compactResult.result?.tokensBefore;
               const compactionTokensAfter = compactResult.result?.tokensAfter;
               const compactionMadeNoTokenProgress =

@@ -1513,13 +1513,18 @@ export function buildContextOverflowRecoveryText(params: {
         activeSessionEntry: params.activeSessionEntry,
       })
     : undefined;
+  const configuredReserveFloor = params.cfg.agents?.defaults?.compaction?.reserveTokensFloor;
+  const effectiveReserveTokens =
+    params.activeSessionEntry?.contextBudgetStatus?.effectiveReserveTokens ??
+    (typeof configuredReserveFloor === "number" &&
+    Number.isFinite(configuredReserveFloor) &&
+    configuredReserveFloor >= 0
+      ? Math.floor(configuredReserveFloor)
+      : undefined);
   return (
     prefix +
     (heartbeatBleedHint ??
-      buildContextOverflowResetHint(
-        primaryContextWindow,
-        params.activeSessionEntry?.contextBudgetStatus?.effectiveReserveTokens,
-      ))
+      buildContextOverflowResetHint(primaryContextWindow, effectiveReserveTokens))
   );
 }
 

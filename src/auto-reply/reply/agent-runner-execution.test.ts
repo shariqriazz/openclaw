@@ -904,6 +904,31 @@ describe("buildContextOverflowRecoveryText", () => {
     expect(text).not.toContain("to 50000 or higher");
   });
 
+  it("uses the configured reserve when failed-run status was not persisted", () => {
+    const text = buildContextOverflowRecoveryText({
+      preserveSessionMapping: true,
+      cfg: {
+        agents: {
+          defaults: {
+            compaction: { reserveTokensFloor: 100_000 },
+          },
+        },
+      },
+      primaryProvider: "openai",
+      primaryModel: "gpt-5.6-sol",
+      activeSessionEntry: {
+        sessionId: "session",
+        updatedAt: 1,
+        modelProvider: "openai",
+        model: "gpt-5.6-sol",
+        contextTokens: 372_000,
+      },
+    });
+
+    expect(text).toContain("current effective compaction reserve is 100000 tokens");
+    expect(text).not.toContain("to 50000 or higher");
+  });
+
   it("falls back to session entry model when runtimeProvider is not provided", () => {
     const text = buildContextOverflowRecoveryText({
       cfg: {
