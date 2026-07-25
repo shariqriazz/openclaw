@@ -1,8 +1,9 @@
 # Gateway Reliability and Persistence Performance Plan
 
 - Status: correctness Batches 1-4 and performance Phases 0-1 implemented and
-  validated; performance Phase 2 deferred pending consumer, migration, and
-  rollback proof
+  validated; Batch 5 plans the native LCM lifecycle migration;
+  post-deployment evidence reopens bounded LCM-memory work and the gated
+  Phase 2 session-store investigation
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -22,19 +23,26 @@ commits, validation gates, deployment steps, and rollback points:
 4. Convert the historical performance proof into a repository-owned benchmark.
 5. Move trajectory rolling-window maintenance to one bounded worker after the
    benchmark reproduces the result.
-6. Move session metadata to per-agent SQLite only if post-worker measurements,
+6. Remove Lossless Claw's retained full-prompt diagnostic snapshots without
+   changing assembly output, then measure the remaining session-store and LCM
+   assembly costs under production-shaped concurrency.
+7. Move session metadata to per-agent SQLite only if post-worker measurements,
    the consumer audit, and migration rehearsal still support it.
-7. Use OpenAI Responses server compaction for compatible OpenAI models while
+8. Use OpenAI Responses server compaction for compatible OpenAI models while
    retaining the readable local summary as a portability and failure fallback.
-8. Keep GPT-5.6's physical provider envelope separate from the operating prompt
+9. Keep GPT-5.6's physical provider envelope separate from the operating prompt
    budget: 1.05M physical, 372K input, and 128K output.
-9. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
-   patch histories, protected behavior, validation commands, and deployment
-   lessons before final handoff.
+10. Replace the external LCM completion watcher and stale janitor with exact,
+    native cron lifecycle handling, and move provider-neutral weekly storage
+    maintenance into a typed `lcm maintain` command.
+11. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
+    patch histories, protected behavior, validation commands, and deployment
+    lessons before final handoff.
 
-The deployed performance architecture is one bounded trajectory worker.
-Per-agent SQLite session metadata remains a conditional future phase, not part
-of this deployment.
+The deployed OpenClaw performance architecture is one bounded trajectory
+worker. The next low-risk performance change is an LCM diagnostic-cache fix.
+Per-agent SQLite session metadata remains conditional on runtime attribution,
+consumer audit, and migration proof.
 
 Execution uses global operator skills and direct source/runtime inspection only.
 Do not invoke OpenClaw repo-local skills, Crabbox, or Testbox. Run builds,
@@ -90,10 +98,60 @@ throughput by 108.4%, reduces event-loop p99 by 73.7%, reduces heartbeat p99 by
 reduces physical writes by 48.5%. This clears both the responsiveness and
 memory gates without changing session storage.
 
-Phase 2 remains conditional. It may proceed only if production telemetry still
-shows whole-store session writes as a material bottleneck and after a complete
-direct-consumer audit plus migration and rollback rehearsal using copies of
-production-scale data.
+The synthetic result does not close the production investigation. A
+post-deployment burst on 2026-07-25 crossed the memory warning threshold and
+left rare event-loop stalls, so the LCM diagnostic-cache fix and bounded
+runtime attribution below must run before deciding Phase 2.
+
+### Post-deployment production evidence
+
+At `2026-07-25T22:26:33Z`, while Main and three full cron-agent runs overlapped,
+the Gateway reported:
+
+```text
+rss=1.82 GiB
+heap=1.41 GiB
+threshold=1.5 GiB
+```
+
+The process reached a 2.31 GiB RSS high-water mark. After the burst, health
+returned to `p99=21ms`, `max=53ms`, and low CPU/utilization, but RSS remained
+approximately 1.13 GiB. This is load-dependent allocation pressure, not a
+permanently blocked Gateway.
+
+Current production-scale metadata stores include:
+
+- Main `sessions.json`: approximately 10.5 MiB and 527 entries.
+- Scout `sessions.json`: approximately 11.7 MiB and 529 entries.
+- 7,396 trajectory files totaling approximately 2.12 GiB.
+- LCM database: approximately 4.3 GiB.
+
+The current-start journal showed no LCM `VACUUM`, database lock, or destructive
+rotation. Normal warn-only rotation checks completed in 0-2 ms. One missing
+ephemeral-cron transcript check measured 807 ms while the event loop was
+already busy; identical checks normally took 1-2 ms, so it is evidence of the
+stall, not its source.
+
+Two remaining allocation paths are now source-confirmed:
+
+1. `src/config/sessions/store.ts` still creates and atomically replaces the
+   complete serialized session store for each changed row. The single-entry
+   fast path avoids reserializing unchanged entries, but still slices,
+   allocates, and writes the complete 10-12 MiB string.
+2. Lossless Claw `src/assemble-debug.ts` stores every fully serialized assembled
+   message in `AssemblePrefixSnapshot`. `src/engine.ts` retains those snapshots
+   for up to 100 conversations even though they are used only for prefix-change
+   diagnostics. It also serializes each message again while building the
+   diagnostic summary.
+
+The trajectory worker materially improved the original hot path, but it cannot
+remove these allocations. LCM assembly also materializes all context items and
+resolves them with per-item SQLite reads in `src/assembler.ts`; this is a
+candidate cost, not yet a proven bottleneck.
+
+Phase 2 remains gated. Runtime telemetry must attribute stall time and
+allocation volume to session-store replacement, LCM assembly stages, or other
+run work before activating a storage migration.
 
 The correctness fixes are not implementation prerequisites merely to clear the
 way for storage work. They address independently reproducible production
@@ -167,6 +225,91 @@ The fix must prevent duplicate model turns, duplicate tool side effects,
 duplicate or stale final announcements, and transcript reordering. Persistence
 latency may widen the race, but the lifecycle fix must work against the current
 file-backed store.
+
+#### Confirmed post-deployment Discord redirect gap
+
+The initial redirect implementation is incomplete at the channel admission
+boundary. The model-request redirect primitive, tool-boundary steering, queue
+mode plumbing, and active embedded-session delivery exist, but an ordinary
+Discord message cannot reach them while the same canonical session is busy.
+
+Production incident replay on 2026-07-25 confirmed:
+
+- the first Discord message entered Main at `22:34:40.183 UTC`;
+- the correction arrived from Discord at `22:34:57.337 UTC`, while the first
+  logical turn was still active;
+- the first turn continued through model and tool boundaries and published its
+  final response at `22:35:23.472 UTC`;
+- the correction was appended to the transcript only at `22:35:28.762 UTC` and
+  started a separate follow-up model turn;
+- the correction eventually changed the requested cron schedule, but it did
+  not redirect the active logical turn.
+
+Two independent admission barriers cause this:
+
+1. `extensions/discord/src/monitor/message-run-queue.ts` queues the complete
+   `processDiscordMessage` lifecycle by canonical session key through
+   `createChannelRunQueue`. A second same-session Discord message therefore
+   cannot reach reply dispatch until the first message has fully completed.
+2. `src/auto-reply/reply/dispatch-from-config.ts` allows active queue-policy
+   resolution during dispatch only for Gateway-owned turns carrying
+   `queuedFollowupLifecycle`. Ordinary channel turns wait behind the active
+   reply operation before `getReplyFromConfig` can resolve `redirect`.
+
+The existing redirect tests start below both barriers. Existing tests also
+explicitly preserve the conflicting behavior:
+
+- `extensions/discord/src/monitor/message-handler.queue.test.ts` expects a
+  second same-session Discord message to remain behind the first complete run;
+- `src/auto-reply/reply/dispatch-from-config.test.ts` expects ordinary
+  non-Slack channel turns to remain behind an active reply operation;
+- `src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts` proves redirect
+  only after execution has already reached `runReplyAgent`.
+
+Required correction:
+
+- Keep one primary logical turn and finalization owner per canonical session.
+- Split active-input admission from full channel-run execution. A busy ordinary
+  message must reach the active operation's queue-policy owner without starting
+  a competing reply operation or waiting behind the complete channel run.
+- Generalize active queue-policy resolution for trusted channel input instead
+  of special-casing only Gateway `chat.send`, while retaining route/thread,
+  authorization, media, and lifecycle checks.
+- Keep idle primary turns serialized. Do not remove all channel serialization
+  or weaken the reply-operation ownership fence.
+- Give each accepted correction a durable idempotency identity and operation
+  generation. Do not acknowledge durable acceptance until the active attempt
+  adopts it at a transcript barrier.
+- If finalization wins before adoption, convert the correction into exactly one
+  queued follow-up turn. Never append directly to the transcript from the
+  channel handler.
+- Preserve the strict takeover fence for unknown appenders, mutation, and
+  truncation.
+- Preserve media fallback, cancellation, replay protection, typing cleanup,
+  deterministic ordering, and exactly-once tool side effects.
+- Use the existing SQLite channel ingress queue where it satisfies the durable
+  claim, stale-claim recovery, tombstone, and payload-retention requirements;
+  do not add a second queue implementation.
+
+Required failing test before implementation:
+
+- Drive two ordinary messages through the real Discord handler, channel run
+  queue, shared reply dispatch, active reply operation, and embedded backend
+  using deterministic barriers.
+- Hold the first turn in model generation, deliver the correction, and prove
+  the correction reaches active redirect before the first final can publish.
+- Repeat with a running tool and prove the tool completes once before the
+  correction is adopted.
+- Race the correction against terminal finalization and prove either redirect
+  wins before commit or exactly one follow-up turn starts afterward.
+- Assert transcript ordering, one user correction, no duplicate assistant
+  final, no repeated tool effect, no takeover error, and durable ingress
+  cleanup.
+- Add the equivalent TUI `chat.send` integration proof. Its Gateway lifecycle
+  bypass exists in source, but redirect behavior is not yet proven end to end.
+- Audit other ordinary messaging channels using shared reply dispatch because
+  the generic dispatch admission barrier can produce the same effective
+  follow-up behavior even without Discord's additional outer queue.
 
 Implementation order within Batch 1:
 
@@ -286,6 +429,216 @@ Focused proof must cover endpoint/body/header construction, repeated opaque
 compaction, resume with pending input, exact-model isolation, newest-boundary
 selection, stale-reasoning suppression, native compaction after stateful LCM
 manual and overflow paths, and unchanged local fallback behavior.
+
+### Batch 5: Native LCM cron lifecycle and maintenance
+
+The current LCM lifecycle is correct in intent but split across external
+polling scripts that read private OpenClaw and LCM SQLite tables:
+
+- `openclaw-lcm-completion-watcher` observes `cron_jobs.running_at_ms`, resolves
+  the exact run from `cron_run_logs`, and archives the matching active LCM
+  conversation.
+- `openclaw-lcm-janitor` archives active cron conversations idle for at least
+  three hours.
+- `openclaw-lcm-weekly-maintenance` backs up, retains, purges, compacts,
+  verifies, and reports on LCM storage.
+
+The migration preserves that behavior while moving lifecycle ownership beside
+the contracts and schema it depends on. It does not absorb deployment-specific
+Drive uploads, Pipeline handoffs, Discord notifications, Gateway systemd
+control, private recipients, accounts, or installation paths.
+
+#### Current baseline
+
+Before cutover, record and compare:
+
+- exact source and installed-script hashes;
+- helper unit enablement and active states;
+- Gateway and LCM plugin fingerprints;
+- LCM active/inactive counts partitioned by cron, Discord, subagent, and other;
+- exact active cron conversation identities;
+- LCM database, WAL, SHM, and `lcm-files` sizes;
+- the latest watcher, janitor, and maintenance audit records.
+
+The observed baseline on 2026-07-25 is:
+
+- completion watcher: enabled and active;
+- janitor timer: enabled and active;
+- janitor service: disabled and inactive between one-shot runs;
+- weekly maintenance timer: disabled and inactive;
+- weekly maintenance service: static and inactive;
+- workspace and installed copies of all three scripts have matching hashes.
+
+These are deployment observations, not constants. Re-read them immediately
+before the maintenance window.
+
+#### OpenClaw completion-event contract
+
+`cron_changed` already exposes most required fields, but the current delivery
+ordering is not a sufficient lifecycle boundary:
+
+- `src/cron/service/timer.ts` emits scheduled `finished` events before the
+  finalized cron state is persisted;
+- scheduled `emitJobFinished()` does not currently carry `runId`, while the
+  manual path can;
+- `src/gateway/server-cron.ts` invokes the plugin hook before its fire-and-forget
+  `appendCronRunLog()` call;
+- hook delivery itself is fire-and-forget, so a process exit can lose the
+  completion after the cron run has otherwise completed.
+
+Implement the smallest generic OpenClaw contract that guarantees:
+
+1. Scheduled and manual terminal paths produce one normalized finished event
+   containing exact `jobId`, `agentId`, `runAtMs`, `runId`, `sessionId`,
+   `sessionKey`, run status, and delivery status.
+2. Cron run state and run-log identity are durable before the event becomes
+   eligible for plugin delivery.
+3. Delivery has a stable idempotency key derived from immutable run identity,
+   not message text, job name, prefix matching, or newest-child guesses.
+4. An accepted event remains replayable after Gateway restart until the plugin
+   has acknowledged successful handling.
+5. Plugin failure never rewrites the cron result or causes the cron payload to
+   execute again. It retains a bounded retryable lifecycle item with
+   content-free diagnostics.
+6. Invalid or incomplete identity fails closed and becomes an observable
+   terminal lifecycle error rather than matching a nearby conversation.
+
+Prefer an existing shared SQLite outbox primitive if one satisfies these
+requirements. Otherwise add a narrow cron-lifecycle outbox to the shared
+OpenClaw state database using the repository's normal Kysely migration path.
+Do not add a JSON sidecar, permanent dual path, or private-table polling API.
+
+The completion event remains a generic plugin contract. OpenClaw must not
+contain Lossless Claw identifiers or archival policy.
+
+#### Exact completion archival in Lossless Claw
+
+Lossless Claw registers a typed `cron_changed` handler and handles only
+`action="finished"` events with complete exact identity.
+
+The handler must:
+
+- parse and validate a strict cron run-scoped `sessionKey`;
+- resolve exactly one active conversation by exact session key;
+- verify `sessionId` when both sides provide it;
+- archive that conversation in one idempotent transaction with a dedicated
+  `cron-completed` cause and lifecycle-event receipt;
+- acknowledge duplicate delivery only when the prior receipt proves the same
+  immutable run identity and outcome;
+- treat an already archived exact conversation as an idempotent no-op;
+- reject missing identity, multiple matches, prefix matches, base-session
+  guesses, unrelated conversations, and status ambiguity;
+- archive terminal success, error, timeout, and delivery-failure outcomes;
+- emit content-free audit fields for event id, run identity, status, result,
+  duration, and duplicate/retry classification.
+
+Overlapping runs are independent because each event carries its exact
+run-scoped identity. Completion handling never selects the newest child and
+never scans for a likely conversation.
+
+#### Native stale-conversation recovery
+
+Stale recovery remains a safety net for abandoned active cron conversations,
+not a replacement for exact completion events.
+
+Implement one plugin-owned, single-flight scheduled sweep that:
+
+- defaults to a three-hour idle threshold;
+- is configurable and supports dry-run;
+- considers only strict cron conversation identities;
+- excludes Discord, interactive, subagent, and all other non-cron sessions;
+- compares each candidate with a host-provided snapshot of active/in-flight
+  cron run identities before applying age policy;
+- fails closed when ownership is ambiguous;
+- updates only a still-active exact conversation and records a dedicated
+  `cron-stale-recovery` cause;
+- emits one bounded audit result per candidate and aggregate scan metrics;
+- cannot overlap itself and stops cleanly with the plugin/Gateway lifecycle;
+- recovers missed completion events after restart without racing a live run.
+
+If the existing plugin cron service cannot expose exact active run identity,
+add a narrow read-only SDK capability for an active-cron snapshot. Do not make
+LCM read OpenClaw's private cron tables. A plain job listing with
+`runningAtMs` is insufficient unless it also carries the exact run/session
+identity needed to protect overlapping runs.
+
+Age alone is never proof that a currently owned run is abandoned. When host
+ownership evidence is temporarily unavailable, recovery remains dry/no-op and
+reports the ambiguity.
+
+#### Native `lcm maintain`
+
+Add a typed standalone CLI subcommand:
+
+```text
+lcm maintain [--dry-run] [--retention-days 14] [--confirm] [--json]
+```
+
+Dry-run is the default. Mutation requires an explicit confirmation flag.
+Production verification in this program uses dry-run only.
+
+The provider-neutral command preserves:
+
+- one frozen cutoff and a fourteen-day default retention;
+- inactive cron conversations only;
+- a coherent verified SQLite backup that includes committed WAL state;
+- a verified archive and manifest for `lcm-files`;
+- database, disk-headroom, schema, path, and symlink guards;
+- dependent row deletion before unreferenced sidecar cleanup;
+- FTS rebuild and integrity verification;
+- conditional vacuum using the existing free-page and disk-headroom policy;
+- active, Discord, and non-cron count invariants;
+- comparison with the historical foreign-key baseline;
+- transaction rollback, locking, signal recovery, and atomic JSON reports;
+- retention of a verified backup after every mutating failure.
+
+Do not silently change generic `prune` behavior. Reuse lower-level deletion,
+backup, and conversation-store primitives only where their contracts match;
+otherwise add maintenance-specific typed operations.
+
+Confirmed mutation must acquire an exclusive maintenance lease and fail if a
+Gateway/plugin writer is active. The LCM runtime should hold the corresponding
+shared lease while its database is open. Deployment wrappers remain
+responsible for stopping services and controlling systemd; LCM core only
+enforces its storage-safety contract.
+
+The native core does not upload to Google Drive, send Pipeline handoffs or
+Discord notifications, or stop/start Gateway. A thin deployment adapter may:
+
+1. freeze the Gateway and helper writers;
+2. call `lcm maintain --confirm --json`;
+3. upload the verified backup/report;
+4. publish deployment-specific notifications;
+5. restore service state.
+
+The weekly timer remains disabled during this migration. No confirmed
+production maintenance runs are authorized.
+
+#### Cutover and rollback
+
+After source and copied-fixture gates pass:
+
+1. Stop the Gateway through the supported OpenClaw CLI.
+2. Stop/freeze every LCM/session writer and confirm none remain.
+3. Back up config, OpenClaw state, sessions, cron state, LCM SQLite through a
+   coherent backup mechanism, `lcm-files`, and the active extension.
+4. Install clean OpenClaw and LCM builds from their committed `shariq`
+   revisions and verify source/test/dist/runtime parity.
+5. Stop and disable the completion watcher, janitor timer/service, and weekly
+   timer; verify the weekly service is not running.
+6. Keep old scripts and unit files intact as disabled rollback artifacts.
+7. Validate config/schema, start Gateway through the supported CLI, wait for
+   plugin initialization, and probe Gateway, Discord, and plugin health.
+8. Run one disposable cron naturally. Capture its exact identity and prove
+   native archival changes only that conversation.
+9. Test stale recovery and confirmed maintenance only on copied fixtures.
+10. Run production `lcm maintain` in dry-run mode and compare the plan with the
+    baseline invariants.
+
+Rollback restores matching source, build, config, databases, files, and helper
+unit states as one set. If native lifecycle verification fails, stop the new
+runtime before restoring and re-enabling only the helpers that were active in
+the recorded baseline.
 
 ### Rebase-skill maintenance
 
@@ -807,7 +1160,7 @@ deprecation window before removing them.
 ## Correctness Implementation Batches
 
 Each batch is a separate commit and rollback point. Batch 1 must pass before
-Batch 2, Batch 2 before Batch 3, and Batch 4 remains isolated from those
+Batch 2, Batch 2 before Batch 3, and Batches 4-5 remain isolated from those
 ownership fixes. Do not combine these fixes with trajectory or session-storage
 changes.
 
@@ -944,6 +1297,68 @@ Exit criteria:
 - production config validates, canonical LCM source/build parity passes, and
   eager Codex discovery remains disabled without disabling explicit Codex use.
 
+### Batch 5 implementation surface
+
+Expected OpenClaw surfaces:
+
+- `src/plugins/hook-types.ts`
+- `src/cron/service/timer.ts`
+- `src/cron/service/ops.ts`
+- `src/cron/run-log.ts`
+- `src/gateway/server-cron.ts`
+- the shared-state Kysely schema/migration and a narrow lifecycle-outbox owner
+  only if no existing durable primitive satisfies the contract
+- plugin SDK exports for exact finished-event identity and the read-only active
+  cron-run snapshot
+- focused cron persistence, hook replay, restart, overlap, and SDK tests
+
+Expected Lossless Claw surfaces:
+
+- `src/plugin/index.ts`
+- `src/openclaw-bridge.ts`
+- `src/store/conversation-store.ts`
+- `src/prune.ts` only for compatible low-level extraction, without changing
+  generic prune behavior
+- `src/plugin/lcm-db-backup.ts`
+- `src/cli/args.ts`
+- `src/cli/main.ts`
+- new narrow lifecycle and maintenance modules
+- schema migration for idempotent lifecycle receipts if required
+- generated `dist` and package artifacts required by the LCM release process
+- focused hook, stale-recovery, maintenance, locking, backup, rollback, and CLI
+  tests
+
+Expected deployment-only surfaces:
+
+- a thin wrapper around `lcm maintain` for Drive upload, Pipeline handoff, and
+  Discord reporting;
+- existing helper scripts and unit files retained unchanged but disabled until
+  separate retirement approval;
+- the infrastructure continuity reference updated only after cutover behavior
+  and rollback commands are proven.
+
+Exit criteria:
+
+- every completed cron run exposes exact durable identity after run state and
+  run log persistence;
+- a restart between persistence and plugin acknowledgement replays archival
+  exactly once without replaying the cron payload;
+- success, error, timeout, and delivery failure archive only their exact
+  run-scoped conversation;
+- duplicate and overlapping events cannot archive an unrelated conversation;
+- stale recovery preserves the three-hour default and excludes every active or
+  ambiguous host-owned run;
+- no Discord, interactive, subagent, or non-cron conversation is eligible;
+- dry-run maintenance produces a stable atomic report without mutation;
+- confirmed copied-fixture maintenance produces and verifies a complete
+  restorable backup before deletion;
+- purge, sidecar cleanup, FTS rebuild, conditional vacuum, invariants,
+  interruption, and rollback all pass fixture tests;
+- one disposable live cron is archived natively with unrelated live counts
+  unchanged;
+- production maintenance remains dry-run and the superseded helper units remain
+  disabled but available for rollback.
+
 ### Global rebase-skill closeout
 
 Expected global surfaces:
@@ -959,6 +1374,8 @@ Exit criteria:
 - every new local behavior has a named regression test and upstream-absorption
   proof rule;
 - paired context-engine commits cannot be replayed or dropped independently;
+- paired cron-lifecycle identity, outbox/replay, exact archival, stale
+  ownership, and maintenance-safety commits cannot be partially replayed;
 - new benchmark, worker, migration, backup, clean-deployment, and soak gates
   appear in the appropriate future rebase steps;
 - skill build/install/start/health/canary/push commands match the workflow
@@ -1033,8 +1450,82 @@ Exit criteria:
   justified.
 
 All Phase 1 exit criteria passed in the focused trajectory tests, full build,
-and five-run mixed benchmark. Phase 2 is not required to meet the current
-performance or memory target.
+and five-run mixed benchmark. The synthetic target passed, but the later
+production burst requires the additional attribution and memory work below.
+
+### Phase 1.5: Remove retained LCM prompt copies
+
+This is a narrow Lossless Claw optimization with no context, compaction,
+retrieval, persistence, or model-visible behavior change.
+
+1. Replace `AssemblePrefixSnapshot.serializedMessages` with fixed-size SHA-256
+   digests for each message.
+2. Serialize each message once per snapshot and derive its digest and existing
+   diagnostic summary from that serialization.
+3. Preserve the current 100-conversation LRU bound, prefix/divergence
+   decisions, divergence summaries, and diagnostic log fields. Hash values may
+   change to a documented digest-of-digests format; their equality semantics
+   must not.
+4. Never retain full message bodies, serialized prompts, tool results, or
+   reasoning solely for prefix diagnostics. Keep only fixed-size digests and
+   the existing bounded summaries.
+5. Keep the existing final assembled messages and token estimates untouched.
+
+Expected Lossless Claw files:
+
+- `src/assemble-debug.ts`
+- `src/engine.ts` only if the snapshot type/call contract requires it
+- focused `assemble-debug` and engine assembly tests
+
+Required proof:
+
+- old and new prefix/divergence decisions match for identical, extended,
+  shortened, and divergent message sequences;
+- message content changes produce a different digest and the same divergence
+  position as the current implementation;
+- a 100-conversation, production-sized fixture retains only bounded digest and
+  summary metadata, not serialized prompt bodies;
+- heap retained after the fixture is materially lower;
+- assembled messages, estimates, context projection, and provider payload are
+  byte-for-byte unchanged.
+
+### Phase 1.6: Attribute remaining production pressure
+
+Add bounded numeric telemetry before activating a larger migration. It must not
+record prompt, transcript, tool, credential, or user-message content.
+
+OpenClaw telemetry:
+
+- session-store load, single-entry splice, serialization, write, and rename
+  duration;
+- old/new store bytes and bytes physically submitted per mutation;
+- trajectory worker queue bytes, wait time, job duration, and worker restarts;
+- active top-level, cron, and subagent run counts at event-loop and memory
+  warnings;
+- process RSS, heap used, external memory, and array buffers at run start,
+  provider submission, tool boundary, persistence flush, and run release.
+
+Lossless Claw telemetry:
+
+- assembly duration split into context-item load, item resolution, policy
+  selection, live reconciliation, serialized clamp, and diagnostic snapshot;
+- context-item/message counts, assembled estimated tokens, and diagnostic
+  snapshot metadata bytes;
+- SQLite busy/wait duration and statement counts without SQL values;
+- deferred maintenance queue duration and outcome.
+
+Correlate these metrics by timestamp and opaque run/session hashes. Run
+production-shaped isolated workloads at 3, 8, and 15-16 concurrent agents.
+Report median, p99, maximum, heap/RSS high-water, and post-idle retained memory.
+Use this evidence to authorize one of:
+
+1. Phase 2 SQLite session metadata if whole-store replacement dominates.
+2. Batched LCM context resolution if per-item SQLite work dominates.
+3. A separately reviewed run-lifecycle retention fix if memory remains held
+   after all runs release.
+
+Do not add adaptive throttling, lower configured concurrency, force garbage
+collection, or restart on a warning as a substitute for attribution.
 
 ### Phase 2: Move session metadata to per-agent SQLite rows
 
@@ -1050,7 +1541,7 @@ implementation or production migration:
    lost-update handling.
 5. Produce and validate a SQLite-to-JSON rollback export before production
    migration.
-6. Confirm Phase 1 measurements still identify whole-store session writes as a
+6. Confirm Phase 1.6 telemetry identifies whole-store session writes as a
    material remaining bottleneck.
 
 Only after those gates pass:
@@ -1210,6 +1701,51 @@ Exit criteria:
 - Sol, Terra, and Luna resolve to 1.05M physical, 372K operating, and 128K
   output budgets without alternate model aliases.
 
+### Native LCM cron lifecycle and maintenance
+
+- Scheduled and manual completion events carry the same exact run identity.
+- Finished-event delivery cannot begin before cron state and run-log
+  persistence complete.
+- A crash after persistence but before plugin acknowledgement replays one
+  lifecycle event and never reruns the cron payload.
+- Successful, errored, timed-out, and delivery-failed runs archive their exact
+  run-scoped LCM conversation.
+- Missing or invalid `sessionKey`, `sessionId`, `runId`, `jobId`, or
+  `runAtMs` fails closed without a prefix or newest-child fallback.
+- Two overlapping runs for one job archive only their own conversations.
+- Duplicate completion delivery produces one archive transition and one
+  idempotent receipt.
+- Plugin timeout/failure retains bounded retry state and leaves the cron result
+  unchanged.
+- Restart before and after archival converges to one archived conversation and
+  one acknowledged lifecycle item.
+- Stale recovery archives a strict cron conversation idle beyond three hours
+  only when no exact active host run owns it.
+- An active run older than three hours remains active.
+- Missing or ambiguous host ownership evidence produces a dry/no-op audit.
+- Discord, interactive, subagent, malformed, and non-cron conversations are
+  never stale-recovery candidates.
+- Concurrent sweeps are single-flight and an interrupted sweep is restart-safe.
+- `lcm maintain` defaults to dry-run and refuses mutation without explicit
+  confirmation.
+- Candidate selection freezes one cutoff and includes inactive cron
+  conversations older than the retention boundary only.
+- Backup restoration reproduces the database and `lcm-files` manifest from a
+  fixture with committed WAL state.
+- Schema, path, symlink, disk-headroom, and active-writer guards fail before
+  mutation.
+- Purge removes dependent rows transactionally and deletes only sidecars with
+  no surviving reference.
+- FTS rebuild, foreign-key baseline comparison, integrity checks, and
+  conditional vacuum preserve every declared invariant.
+- Injected failure and signal interruption restore database/files from the
+  verified backup and retain an atomic failure report.
+- Generic `prune` behavior and existing backup rotation remain unchanged.
+- The OpenClaw-to-LCM integration fixture proves exact event, acknowledgement,
+  replay, and audit behavior across both forks.
+- A disposable live cron archives exactly one conversation; before/after
+  active Discord and non-cron counts are identical.
+
 ### Trajectory worker
 
 - Current and worker outputs are byte-identical.
@@ -1276,6 +1812,8 @@ Exit criteria:
 ### Performance and stability
 
 - Exact current-code baseline remains available for comparison.
+- LCM prefix diagnostics retain fixed-size message digests, not serialized
+  prompt bodies, and produce the same prefix/divergence decisions.
 - A 16-agent mixed test performs no whole-store session writes.
 - Event-loop p99 target: below 25 ms during the storage fixture.
 - Event-loop maximum target: below 250 ms during the storage fixture.
@@ -1287,6 +1825,8 @@ Exit criteria:
   and worker queue wait/bytes remain bounded.
 - Worker count never exceeds one.
 - No monotonic heap/RSS growth during the initial or extended soak.
+- Post-idle retained memory is measured after each 3, 8, and 15-16 run fixture;
+  any plateau must be attributed before deployment.
 - No health or session-history timeout during the soak.
 - No infinite retry, worker restart, or SQLite busy loop.
 
@@ -1304,26 +1844,37 @@ Run the narrowest proof first, then broaden:
 4. OpenClaw context-engine delegation and overflow-recovery tests.
 5. Lossless Claw stateful/stateless compaction and lifecycle tests.
 6. Capability-aware exec schema and runtime-enforcement tests.
-7. Build and package OpenClaw and Lossless Claw; verify clean source/dist
-   provenance.
-8. Run the repository-owned Phase 0 benchmark at least five times.
-9. Focused trajectory worker tests after Phase 0 authorizes Phase 1.
-10. Rerun isolated and mixed benchmarks after Phase 1.
-11. Perform the direct-consumer audit and migration rehearsal before Phase 2.
-12. Focused session accessor and SQLite row tests.
-13. Doctor migration and rollback round-trip tests.
-14. Plugin SDK session-store tests.
-15. PI embedded runner, session lifecycle, cron, subagent, and Discord tests.
-16. Database schema generation and Kysely guards.
-17. Import-cycle, formatting, lint, and changed typecheck lanes.
-18. Full build because worker packaging and generated database types change.
-19. Repeated 16-agent benchmark.
-20. 30-minute isolated Gateway soak.
-21. Longer isolated standalone soak.
-22. Quiet production soak with controlled automation.
-23. Refresh and audit the global `openclaw-rebase` skill against the final
+7. OpenClaw post-persist cron identity, durable delivery, replay, and active-run
+   snapshot tests.
+8. Lossless Claw exact archival, stale recovery, maintenance, backup, locking,
+   interruption, and rollback fixture tests.
+9. Cross-fork lifecycle integration against temporary OpenClaw and LCM
+   databases.
+10. Build and package OpenClaw and Lossless Claw; verify clean source/dist
+    provenance.
+11. Run the repository-owned Phase 0 benchmark at least five times.
+12. Focused trajectory worker tests after Phase 0 authorizes Phase 1.
+13. Rerun isolated and mixed benchmarks after Phase 1.
+14. Lossless Claw prefix-digest equivalence and retained-heap tests.
+15. Run the Phase 1.6 attribution workload at 3, 8, and 15-16 concurrent runs.
+16. Perform the direct-consumer audit and migration rehearsal before Phase 2.
+17. Focused session accessor and SQLite row tests.
+18. Doctor migration and rollback round-trip tests.
+19. Plugin SDK session-store tests.
+20. PI embedded runner, session lifecycle, cron, subagent, and Discord tests.
+21. Database schema generation and Kysely guards.
+22. Import-cycle, formatting, lint, and changed typecheck lanes.
+23. Full build because worker packaging and generated database types change.
+24. Repeated 16-agent benchmark.
+25. 30-minute isolated Gateway soak.
+26. Longer isolated standalone soak.
+27. Quiet production soak with controlled automation.
+28. Perform the stopped-Gateway lifecycle cutover, one disposable live cron
+    archival canary, copied-fixture stale recovery, and production maintenance
+    dry-run.
+29. Refresh and audit the global `openclaw-rebase` skill against the final
     OpenClaw and LCM commit histories and proven deployment workflow.
-24. Fresh mandatory autoreview for each implementation batch until no
+30. Fresh mandatory autoreview for each implementation batch until no
     actionable findings remain.
 
 The implementation work must not use OpenClaw repo-local skills, Crabbox, or
@@ -1347,6 +1898,7 @@ phases, but each deployment must retain a clean rollback point.
    - every agent's `sessions.json`;
    - every agent database;
    - Lossless Claw database;
+   - Lossless Claw `lcm-files`;
    - relevant transcript and trajectory directories.
 5. Back up SQLite databases through SQLite's backup mechanism or from a
    verified checkpointed offline state. Do not copy only the main database file
@@ -1389,9 +1941,14 @@ phases, but each deployment must retain a clean rollback point.
     recovery, and absence of runtime JSON fallback.
 27. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
     block-write, and LCM metrics during normal load.
-28. Resume frozen helpers only after Gateway, Discord, plugin parity, context,
-    steering, and exec-host canaries pass.
-29. Update the global rebase skill with final commit hashes and any durable
+28. For Batch 5, keep the superseded completion watcher, janitor, and weekly
+    timer disabled; run one disposable cron lifecycle canary, copied-fixture
+    stale recovery, and production `lcm maintain` dry-run. For deployments
+    before Batch 5, resume only the helpers recorded active in the baseline.
+29. Verify the lifecycle canary archives only its exact conversation, produces
+    one acknowledged receipt, survives duplicate delivery, and leaves active
+    Discord/non-cron counts unchanged.
+30. Update the global rebase skill with final commit hashes and any durable
     workflow facts learned from deployment, then verify its complete readback
     before final handoff.
 
@@ -1416,7 +1973,9 @@ Rollback requires:
 9. Resume helpers only after rollback canaries pass.
 
 Lossless Claw's database and transcript files are not migrated by Phase 2 and
-should not require conversion.
+do not require conversion for that phase. Batch 5 rollback restores the
+matching LCM database, WAL-consistent backup, `lcm-files`, source/build, and
+previously active helper unit states together.
 
 Rollback immediately if:
 
@@ -1432,6 +1991,12 @@ Rollback immediately if:
 - stateful LCM recovery regresses;
 - active LCM source/dist/runtime provenance is not clean and consistent;
 - the exec schema advertises unavailable hosts or weakens sandbox isolation;
+- cron lifecycle delivery occurs before durable run identity, loses a terminal
+  event, retries the cron payload, or archives any non-exact conversation;
+- stale recovery touches an active, ambiguous, Discord, interactive, subagent,
+  or non-cron conversation;
+- confirmed maintenance can run beside an active writer, mutates without an
+  explicit confirmation, or cannot restore its verified backup;
 - SQLite integrity fails;
 - session rows disappear or lose fields;
 - `/new`, `/compact`, or PI turns regress;
@@ -1465,6 +2030,24 @@ Risk controls:
 - rebase each phase onto the stable upstream release branch before deployment;
 - use `git range-diff` and behavioral proof when replaying fork patches.
 
+### Native LCM lifecycle: medium
+
+The exact completion hook is narrow, but durable post-persist delivery crosses
+cron finalization, the plugin SDK, OpenClaw shared state, and LCM archival.
+Maintenance has high operational consequences despite being isolated to the
+LCM CLI.
+
+Risk controls:
+
+- keep the event contract generic and exact-run scoped;
+- persist before delivery and acknowledge only after an idempotent LCM commit;
+- never infer identity from prefixes, names, timing, or newest conversations;
+- keep stale recovery cron-only and ownership-aware;
+- default maintenance to dry-run and require an exclusive writer lease;
+- test mutation, backup, interruption, and rollback on copied fixtures;
+- retain old helper artifacts disabled until separate retirement approval;
+- keep OpenClaw and LCM lifecycle commits paired in the rebase skill.
+
 ## Completion Criteria
 
 The current implementation batch is complete when:
@@ -1486,6 +2069,15 @@ The current implementation batch is complete when:
   remains authoritative;
 - provider/network retry behavior remains unchanged unless separately proven
   defective;
+- exact post-persist cron lifecycle events archive one matching LCM
+  conversation across success, error, timeout, delivery failure, duplicate,
+  overlap, and restart cases;
+- stale recovery retains its three-hour default, protects active ownership, and
+  never selects non-cron sessions;
+- `lcm maintain` is typed, dry-run by default, backup-first, invariant-checked,
+  interruption-safe, and proven restorable on copied fixtures;
+- superseded LCM helper units remain disabled after the native canary while
+  their scripts and units remain available for rollback;
 - the Phase 0 benchmark is committed and reproducible in the isolated
   standalone validation environment;
 - Phase 1 measurements reproduce a material trajectory-worker improvement;
