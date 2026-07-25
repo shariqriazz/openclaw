@@ -1356,7 +1356,7 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
     ackReactionScope: "group-mentions", // group-mentions | group-all | direct | all | off | none
     removeAckAfterReply: false,
     queue: {
-      mode: "steer", // steer (default) | followup | collect | interrupt
+      mode: "steer", // steer (default) | redirect | followup | collect | interrupt
       debounceMs: 500,
       cap: 20,
       drop: "summarize", // old | new | summarize (default)

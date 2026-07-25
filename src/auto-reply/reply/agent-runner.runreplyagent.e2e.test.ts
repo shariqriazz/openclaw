@@ -211,6 +211,7 @@ function createMinimalRun(params?: {
   isRunActive?: () => boolean;
   isStreaming?: boolean;
   shouldSteer?: boolean;
+  shouldRedirect?: boolean;
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
   currentInboundEventKind?: FollowupRun["currentInboundEventKind"];
@@ -270,6 +271,7 @@ function createMinimalRun(params?: {
         queueKey: "main",
         resolvedQueue,
         shouldSteer: params?.shouldSteer ?? false,
+        shouldRedirect: params?.shouldRedirect ?? false,
         shouldFollowup: params?.shouldFollowup ?? false,
         isActive: params?.isActive ?? false,
         isRunActive: params?.isRunActive,
@@ -294,6 +296,38 @@ function createMinimalRun(params?: {
 }
 
 describe("runReplyAgent active steering", () => {
+  it("redirects through the active operation and adopts only after transcript commit", async () => {
+    const events: string[] = [];
+    state.queueEmbeddedAgentMessageMock.mockImplementationOnce(
+      (_sessionId: string, _prompt: string, options: unknown) => {
+        expect(requireRecord(options, "embedded queue options")).toMatchObject({
+          deliveryMode: "redirect",
+          steeringMode: "all",
+          waitForTranscriptCommit: true,
+        });
+        events.push("transcript-committed");
+        return true;
+      },
+    );
+    const onTurnAdopted = vi.fn(async () => {
+      events.push("adopted");
+    });
+    const { run } = createMinimalRun({
+      opts: { onTurnAdopted },
+      isActive: true,
+      isStreaming: true,
+      shouldRedirect: true,
+      resolvedQueueMode: "redirect",
+    });
+
+    await expect(run()).resolves.toBeUndefined();
+
+    expect(events).toEqual(["transcript-committed", "adopted"]);
+    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
+    expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+  });
+
   it("carries the prepared user-turn recorder into the embedded queue", async () => {
     state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
     const recorder = createUserTurnTranscriptRecorder({

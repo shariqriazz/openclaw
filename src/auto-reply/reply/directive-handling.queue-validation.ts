@@ -40,7 +40,7 @@ export function maybeHandleQueueDirective(params: {
     return {
       text: withOptions(
         `Current queue settings: mode=${settings.mode}, debounce=${debounceLabel}, cap=${capLabel}, drop=${dropLabel}.`,
-        "modes steer, followup, collect, interrupt; debounce:<ms|s|m>, cap:<n>, drop:old|new|summarize",
+        "modes steer, redirect, followup, collect, interrupt; debounce:<ms|s|m>, cap:<n>, drop:old|new|summarize",
       ),
     };
   }
@@ -56,7 +56,7 @@ export function maybeHandleQueueDirective(params: {
     const errors: string[] = [];
     if (queueModeInvalid) {
       errors.push(
-        `Unrecognized queue mode "${directives.rawQueueMode ?? ""}". Valid modes: steer, followup, collect, interrupt.`,
+        `Unrecognized queue mode "${directives.rawQueueMode ?? ""}". Valid modes: steer, redirect, followup, collect, interrupt.`,
       );
     }
     if (queueDebounceInvalid) {

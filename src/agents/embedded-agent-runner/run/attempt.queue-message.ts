@@ -17,6 +17,10 @@ export type EmbeddedAgentActiveSessionSteerTarget = {
     images?: undefined,
     userTurnTranscriptRecorder?: UserTurnTranscriptRecorder,
   ): Promise<void>;
+  redirect?(
+    text: string,
+    userTurnTranscriptRecorder?: UserTurnTranscriptRecorder,
+  ): Promise<"redirected" | "steered">;
   subscribe(listener: (event: unknown) => void): () => void;
 };
 
@@ -132,6 +136,7 @@ export async function steerAndWaitForTranscriptCommit(
   text: string,
   timeoutMs: number,
   userTurnTranscriptRecorder?: UserTurnTranscriptRecorder,
+  deliveryMode: "steer" | "redirect" = "steer",
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -212,10 +217,15 @@ export async function steerAndWaitForTranscriptCommit(
         scheduleTerminalCancellation();
       }
     });
-    const steer = userTurnTranscriptRecorder
-      ? activeSession.steer(text, undefined, userTurnTranscriptRecorder)
-      : activeSession.steer(text);
-    steer.catch((err: unknown) => {
+    const delivery =
+      deliveryMode === "redirect"
+        ? activeSession.redirect
+          ? activeSession.redirect(text, userTurnTranscriptRecorder)
+          : Promise.reject(new Error("active session does not support redirect"))
+        : userTurnTranscriptRecorder
+          ? activeSession.steer(text, undefined, userTurnTranscriptRecorder)
+          : activeSession.steer(text);
+    delivery.catch((err: unknown) => {
       finish(err);
     });
   });
@@ -230,6 +240,7 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
   text: string,
   options:
     | {
+        deliveryMode?: "steer" | "redirect";
         deliveryTimeoutMs?: number;
         waitForTranscriptCommit?: boolean;
         userTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
@@ -237,7 +248,12 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
     | undefined,
 ): Promise<void> {
   if (options?.waitForTranscriptCommit !== true) {
-    if (options?.userTurnTranscriptRecorder) {
+    if (options?.deliveryMode === "redirect") {
+      if (!activeSession.redirect) {
+        throw new Error("active session does not support redirect");
+      }
+      await activeSession.redirect(text, options.userTurnTranscriptRecorder);
+    } else if (options?.userTurnTranscriptRecorder) {
       await activeSession.steer(text, undefined, options.userTurnTranscriptRecorder);
     } else {
       await activeSession.steer(text);
@@ -249,5 +265,6 @@ export async function steerActiveSessionWithOptionalDeliveryWait(
     text,
     options.deliveryTimeoutMs ?? DEFAULT_QUEUE_TRANSCRIPT_COMMIT_TIMEOUT_MS,
     options.userTurnTranscriptRecorder,
+    options.deliveryMode,
   );
 }

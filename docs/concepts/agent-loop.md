@@ -25,7 +25,7 @@ execution, streaming, persistence.
 
 ## Queueing and concurrency
 
-Runs are serialized per session key (session lane) and optionally through a global lane, preventing tool/session races. Messaging channels choose a queue mode (steer/followup/collect/interrupt) that feeds this lane system; see [Command Queue](/concepts/queue).
+Runs are serialized per session key (session lane) and optionally through a global lane, preventing tool/session races. Messaging channels choose a queue mode (steer/redirect/followup/collect/interrupt) that feeds this lane system; see [Command Queue](/concepts/queue).
 
 Transcript writes are additionally protected by a session write lock on the session file. The lock is process-aware and file-based, so it catches writers that bypass the in-process queue or come from another process. Writers wait up to `session.writeLock.acquireTimeoutMs` (default `60000` ms; env override `OPENCLAW_SESSION_WRITE_LOCK_ACQUIRE_TIMEOUT_MS`) before reporting the session as busy.
 

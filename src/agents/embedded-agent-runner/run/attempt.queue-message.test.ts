@@ -9,6 +9,62 @@ import {
 } from "./attempt.queue-message.js";
 
 describe("embedded OpenClaw queued steering cancellation", () => {
+  it("uses the redirect primitive when redirect delivery is requested", async () => {
+    const redirect = vi.fn(async () => "redirected" as const);
+    const steer = vi.fn(async () => undefined);
+    const activeSession: EmbeddedAgentActiveSessionSteerTarget = {
+      redirect,
+      steer,
+      subscribe: () => () => {},
+    };
+
+    await steerActiveSessionWithOptionalDeliveryWait(activeSession, "correct course", {
+      deliveryMode: "redirect",
+    });
+
+    expect(redirect).toHaveBeenCalledWith("correct course", undefined);
+    expect(steer).not.toHaveBeenCalled();
+  });
+
+  it("waits for redirect transcript commitment before resolving", async () => {
+    let emit!: (event: unknown) => void;
+    const redirect = vi.fn(async () => "redirected" as const);
+    const activeSession: EmbeddedAgentActiveSessionSteerTarget = {
+      redirect,
+      steer: async () => {},
+      subscribe: (listener) => {
+        emit = listener;
+        return () => {};
+      },
+    };
+
+    const wait = steerAndWaitForTranscriptCommit(
+      activeSession,
+      "correct course",
+      10_000,
+      undefined,
+      "redirect",
+    );
+    let settled = false;
+    void wait.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(redirect).toHaveBeenCalledWith("correct course", undefined);
+    expect(settled).toBe(false);
+
+    emit({
+      type: "message_end",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "correct course" }],
+      },
+    });
+
+    await expect(wait).resolves.toBeUndefined();
+  });
+
   it("forwards prepared transcript context with a queued steering message", async () => {
     const steer = vi.fn(async () => undefined);
     const recorder = createUserTurnTranscriptRecorder({

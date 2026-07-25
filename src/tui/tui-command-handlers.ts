@@ -829,7 +829,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       return;
     }
     // The Gateway owns queue policy. TUI only serializes pending RPC admission;
-    // an already-active run must not suppress steer/followup/collect/interrupt.
+    // an already-active run must not suppress steer/redirect/followup/collect/interrupt.
     if (!isBtw && (state.pendingOptimisticUserMessage || state.pendingChatRunId)) {
       addBlockedChatSubmitNotice(chatLog);
       tui.requestRender();

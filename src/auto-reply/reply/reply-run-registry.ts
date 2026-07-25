@@ -22,6 +22,7 @@ export type ReplyBackendKind = "embedded" | "cli";
 export type ReplyBackendCancelReason = "user_abort" | "restart" | "superseded";
 
 export type ReplyBackendQueueMessageOptions = {
+  deliveryMode?: "steer" | "redirect";
   steeringMode?: "all";
   debounceMs?: number;
   deliveryTimeoutMs?: number;

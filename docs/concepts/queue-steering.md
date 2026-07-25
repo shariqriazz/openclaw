@@ -3,7 +3,7 @@ summary: "How active-run steering queues messages at runtime boundaries"
 read_when:
   - Explaining how steer behaves while an agent is using tools
   - Changing active-run queue behavior or runtime steering integration
-  - Comparing steering with followup, collect, and interrupt queue modes
+  - Comparing steering with redirect, followup, collect, and interrupt queue modes
 title: "Steering queue"
 ---
 
@@ -32,6 +32,7 @@ Codex review and manual compaction turns reject same-turn steering. When a runti
 | Mode        | Active-run behavior                                    | Later behavior                                                                      |
 | ----------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
 | `steer`     | Steers the prompt into the active runtime when it can. | Waits for the active run to finish if steering is unavailable.                      |
+| `redirect`  | Restarts only active model generation with correction. | Waits for a running tool boundary; otherwise falls back to one followup turn.       |
 | `followup`  | Does not steer.                                        | Runs queued messages later after the active run ends.                               |
 | `collect`   | Does not steer.                                        | Coalesces compatible queued messages into one later turn after the debounce window. |
 | `interrupt` | Aborts the active run instead of steering it.          | Starts the newest message after aborting.                                           |

@@ -1134,6 +1134,7 @@ export async function runReplyAgent(params: {
   queueKey: string;
   resolvedQueue: QueueSettings;
   shouldSteer: boolean;
+  shouldRedirect?: boolean;
   shouldFollowup: boolean;
   isActive: boolean;
   isRunActive?: () => boolean;
@@ -1172,6 +1173,7 @@ export async function runReplyAgent(params: {
     queueKey,
     resolvedQueue,
     shouldSteer,
+    shouldRedirect = false,
     shouldFollowup,
     isActive,
     isRunActive,
@@ -1220,7 +1222,8 @@ export async function runReplyAgent(params: {
       config: followupRun.run.config,
       attributes: traceAttributes,
     });
-  const effectiveShouldSteer = !isHeartbeat && !effectiveResetTriggered && shouldSteer;
+  const effectiveShouldSteer =
+    !isHeartbeat && !effectiveResetTriggered && (shouldSteer || shouldRedirect);
   const effectiveShouldFollowup = !effectiveResetTriggered && shouldFollowup;
   const typingSignals = createTypingSignaler({
     typing,
@@ -1269,6 +1272,7 @@ export async function runReplyAgent(params: {
       steerSessionId,
       followupRun.prompt,
       {
+        ...(shouldRedirect ? { deliveryMode: "redirect" as const } : {}),
         steeringMode: "all",
         ...(opts?.onTurnAdopted ? { waitForTranscriptCommit: true } : {}),
         ...(resolvedQueue.debounceMs !== undefined ? { debounceMs: resolvedQueue.debounceMs } : {}),

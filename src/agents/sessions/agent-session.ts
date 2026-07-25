@@ -1394,6 +1394,39 @@ export class AgentSession {
   }
 
   /**
+   * Redirect model generation within the active logical turn. While a tool is
+   * running, Agent.redirect degrades to the normal steering boundary.
+   */
+  async redirect(
+    text: string,
+    userTurnTranscriptRecorder?: UserTurnTranscriptRecorder,
+  ): Promise<"redirected" | "steered"> {
+    if (text.startsWith("/")) {
+      this.throwIfExtensionCommand(text);
+    }
+
+    let expandedText = this.expandSkillCommand(text);
+    expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+
+    const preparedMessage = await userTurnTranscriptRecorder?.resolveMessage();
+    this.steeringMessages.push(expandedText);
+    this.emitQueueUpdate();
+    const runtimeMessage = {
+      role: "user",
+      content: [{ type: "text" as const, text: expandedText }],
+      timestamp: Date.now(),
+    } satisfies PersistedUserTurnMessage;
+    return this.agent.redirect(
+      preparedMessage && userTurnTranscriptRecorder
+        ? attachRuntimeUserTurnTranscriptContext(runtimeMessage, {
+            message: preparedMessage,
+            recorder: userTurnTranscriptRecorder,
+          })
+        : runtimeMessage,
+    );
+  }
+
+  /**
    * Queue a follow-up message to be processed after the agent finishes.
    * Delivered only when agent has no more tool calls or steering messages.
    * Expands skill commands and prompt templates. Errors on extension commands.

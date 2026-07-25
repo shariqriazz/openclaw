@@ -638,6 +638,7 @@ export const IdentitySchema = z
 
 const QueueModeSchema = z.union([
   z.literal("steer"),
+  z.literal("redirect"),
   z.literal("followup"),
   z.literal("collect"),
   z.literal("interrupt"),

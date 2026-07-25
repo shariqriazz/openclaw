@@ -14,6 +14,9 @@ export function normalizeQueueMode(raw?: string): QueueMode | undefined {
   if (cleaned === "steer" || cleaned === "steering") {
     return "steer";
   }
+  if (cleaned === "redirect" || cleaned === "redirecting") {
+    return "redirect";
+  }
   if (cleaned === "followup" || cleaned === "follow-ups" || cleaned === "followups") {
     return "followup";
   }

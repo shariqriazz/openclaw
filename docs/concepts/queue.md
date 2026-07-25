@@ -37,6 +37,7 @@ Same-turn steering is the default. A prompt that arrives mid-run is injected int
 `/queue` controls what normal inbound messages do while a session already has an active run:
 
 - `steer`: inject messages into the active runtime. OpenClaw delivers all pending steering messages **after the current assistant turn finishes executing its tool calls**, before the next LLM call; Codex app-server receives one batched `turn/steer`. If the run is not actively streaming or steering is unavailable, OpenClaw waits until the active run ends before starting the prompt.
+- `redirect`: correct the same active logical turn. During model generation, OpenClaw cancels only that model request, preserves completed work, and continues with the correction. During tool execution, the tool finishes once and the correction is applied before the next model decision. If redirect is unavailable, the message becomes one followup turn.
 - `followup`: do not steer. Enqueue each message for a later agent turn after the current run ends.
 - `collect`: do not steer. Coalesce queued messages into a **single** followup turn after the quiet window. If messages target different channels/threads, they drain individually to preserve routing.
 - `interrupt`: abort the active run for that session, then run the newest message.
@@ -79,7 +80,8 @@ When channel streaming is `partial` or `block`, steering can look like several s
 - `block`: draft-sized blocks can create the same sequential appearance.
 - Without streaming, steering falls back to a followup after the active run when the runtime cannot accept same-turn steering.
 
-`steer` does not abort in-flight tools. Use `/queue interrupt` when the newest message should abort the current run.
+Neither `steer` nor `redirect` aborts in-flight tools. Use `/queue interrupt` when the newest message should abort the current run.
+Messages with media attachments use one queued followup turn so their complete payload is retained.
 
 ## Precedence
 
@@ -94,7 +96,7 @@ For options, inline or stored `/queue` options win over config. Then channel-spe
 
 ## Per-session overrides
 
-- Send `/queue <steer|followup|collect|interrupt>` as a standalone command to store the queue mode for the current session.
+- Send `/queue <steer|redirect|followup|collect|interrupt>` as a standalone command to store the queue mode for the current session.
 - Options can be combined: `/queue collect debounce:0.5s cap:25 drop:summarize`
 - `/queue default` or `/queue reset` clears the session override.
 

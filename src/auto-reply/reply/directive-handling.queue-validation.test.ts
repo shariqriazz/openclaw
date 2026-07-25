@@ -21,7 +21,7 @@ describe("maybeHandleQueueDirective", () => {
       channel: "quietchat",
     });
     expect(invalidMode?.text).toContain(
-      'Unrecognized queue mode "backlog". Valid modes: steer, followup, collect, interrupt.',
+      'Unrecognized queue mode "backlog". Valid modes: steer, redirect, followup, collect, interrupt.',
     );
 
     const current = maybeHandleQueueDirective({
@@ -42,7 +42,7 @@ describe("maybeHandleQueueDirective", () => {
       "Current queue settings: mode=collect, debounce=1500ms, cap=9, drop=summarize.",
     );
     expect(current?.text).toContain(
-      "Options: modes steer, followup, collect, interrupt; debounce:<ms|s|m>, cap:<n>, drop:old|new|summarize.",
+      "Options: modes steer, redirect, followup, collect, interrupt; debounce:<ms|s|m>, cap:<n>, drop:old|new|summarize.",
     );
   });
 

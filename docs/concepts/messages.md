@@ -104,6 +104,7 @@ When a run is already active, inbound messages steer into it by default. `messag
 | Mode              | Behavior                                            |
 | ----------------- | --------------------------------------------------- |
 | `steer` (default) | Inject the new prompt into the active run.          |
+| `redirect`        | Correct the same turn at its next safe boundary.    |
 | `followup`        | Run the message after the active run finishes.      |
 | `collect`         | Batch compatible messages into one later turn.      |
 | `interrupt`       | Abort the active run, then start the newest prompt. |

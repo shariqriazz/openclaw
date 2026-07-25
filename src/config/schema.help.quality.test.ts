@@ -445,7 +445,7 @@ const ENUM_EXPECTATIONS: Record<string, string[]> = {
   "hooks.mappings[].wakeMode": ['"now"', '"next-heartbeat"'],
   "hooks.gmail.tailscale.mode": ['"off"', '"serve"', '"funnel"'],
   "hooks.gmail.thinking": ['"off"', '"minimal"', '"low"', '"medium"', '"high"'],
-  "messages.queue.mode": ['"steer"', '"followup"', '"collect"', '"interrupt"'],
+  "messages.queue.mode": ['"steer"', '"redirect"', '"followup"', '"collect"', '"interrupt"'],
   "messages.queue.drop": ['"old"', '"new"', '"summarize"'],
   "channels.defaults.groupPolicy": ['"open"', '"disabled"', '"allowlist"'],
   "channels.defaults.contextVisibility": ['"all"', '"allowlist"', '"allowlist_quote"'],

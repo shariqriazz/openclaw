@@ -1283,10 +1283,18 @@ export async function runPreparedReply(
     !isHeartbeatRun &&
     !effectiveResetTriggered &&
     resolvedQueue.mode === "steer";
+  const shouldRedirect =
+    !isRoomEvent &&
+    activeRunAcceptsCurrentThread &&
+    !isHeartbeatRun &&
+    !effectiveResetTriggered &&
+    !hasMediaAttachment &&
+    resolvedQueue.mode === "redirect";
   const shouldFollowup =
     !effectiveResetTriggered &&
     ((isRoomEvent && isActive) ||
       resolvedQueue.mode === "steer" ||
+      resolvedQueue.mode === "redirect" ||
       resolvedQueue.mode === "followup" ||
       resolvedQueue.mode === "collect");
   const activeRunQueueAction = resolveActiveRunQueueAction({
@@ -1604,6 +1612,7 @@ export async function runPreparedReply(
     queueKey,
     resolvedQueue,
     shouldSteer,
+    shouldRedirect,
     shouldFollowup,
     isActive,
     isRunActive: () => {

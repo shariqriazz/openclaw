@@ -23,7 +23,7 @@ import type {
 import type { OriginatingChannelType } from "../../templating.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../directives.js";
 
-export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
+export type QueueMode = "steer" | "redirect" | "followup" | "collect" | "interrupt";
 
 export type QueueDropPolicy = "old" | "new" | "summarize";
 

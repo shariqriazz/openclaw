@@ -1929,7 +1929,7 @@ export const FIELD_HELP: Record<string, string> = {
   "messages.queue":
     "Queue strategy for inbound messages that arrive while a session run is active. Use this to tune steering, deferred followups, batching, or interruption.",
   "messages.queue.mode":
-    'Queue mode for active runs. Use "steer" to inject prompts into the active run, "followup" to run later, "collect" to batch compatible messages later, or "interrupt" to abort the active run before starting the newest prompt.',
+    'Queue mode for active runs. Use "steer" to inject at the next model boundary, "redirect" to restart only in-flight model generation with the correction while allowing tools to finish, "followup" to run later, "collect" to batch compatible messages later, or "interrupt" to abort the active run before starting the newest prompt.',
   "messages.queue.byChannel":
     "Per-channel queue mode overrides keyed by provider id (for example telegram, discord, slack). Use this when one channel's traffic pattern needs different behavior than global defaults.",
   "messages.queue.debounceMs":
