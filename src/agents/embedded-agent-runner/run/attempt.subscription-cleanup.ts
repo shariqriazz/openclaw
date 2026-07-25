@@ -53,6 +53,24 @@ async function waitForEmbeddedAbortSettle(params: {
   }
 }
 
+export async function acquireEmbeddedAttemptCleanupSessionLock<
+  T extends { release(): Promise<void> | void },
+>(params: {
+  acquire: () => Promise<T>;
+  abortSettlePromise?: Promise<unknown> | null;
+  runId: string;
+  sessionId: string;
+}): Promise<T> {
+  // Aborted agent events can still persist their terminal message. Let those
+  // owned writes finish before the final fence is acquired and validated.
+  await waitForEmbeddedAbortSettle({
+    promise: params.abortSettlePromise,
+    runId: params.runId,
+    sessionId: params.sessionId,
+  });
+  return await params.acquire();
+}
+
 /**
  * Identity helper that preserves the concrete subscription params type at call
  * sites. Keeping this as a named helper lets tests assert the exact shape passed
@@ -83,10 +101,7 @@ export async function cleanupEmbeddedAttemptResources(params: {
   bundleLspRuntime?: { dispose(): Promise<void> | void };
   sessionLock: { release(): Promise<void> | void };
   aborted?: boolean;
-  abortSettlePromise?: Promise<unknown> | null;
   skipSessionFlush?: boolean;
-  runId?: string;
-  sessionId?: string;
 }): Promise<void> {
   let sessionLockReleaseError: unknown;
   try {
@@ -94,13 +109,6 @@ export async function cleanupEmbeddedAttemptResources(params: {
       params.removeToolResultContextGuard?.();
     } catch {
       /* best-effort */
-    }
-    if (params.aborted && params.abortSettlePromise) {
-      await waitForEmbeddedAbortSettle({
-        promise: params.abortSettlePromise,
-        runId: params.runId ?? "unknown",
-        sessionId: params.sessionId ?? "unknown",
-      });
     }
     // PERF: When the run was aborted (user stop / timeout), skip the expensive
     // waitForIdle (up to 30 s) and flush pending tool results synchronously so

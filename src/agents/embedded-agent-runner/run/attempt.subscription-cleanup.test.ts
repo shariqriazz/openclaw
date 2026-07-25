@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { log } from "../logger.js";
 import {
+  acquireEmbeddedAttemptCleanupSessionLock,
   EMBEDDED_ABORT_SETTLE_TIMEOUT_MS,
   cleanupEmbeddedAttemptResources,
 } from "./attempt.subscription-cleanup.js";
@@ -17,38 +18,21 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe("cleanupEmbeddedAttemptResources", () => {
+describe("embedded attempt subscription cleanup", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it("waits for aborted prompt settlement before flushing and releasing the lock", async () => {
-    // After an abort, pending prompt work gets a short chance to settle before
-    // session flush/release/dispose run.
+  it("waits for aborted prompt settlement before acquiring the cleanup lock", async () => {
     const order: string[] = [];
     const settle = createDeferred<void>();
 
-    const cleanupPromise = cleanupEmbeddedAttemptResources({
-      removeToolResultContextGuard: () => {
-        order.push("guard");
+    const cleanupLockPromise = acquireEmbeddedAttemptCleanupSessionLock({
+      acquire: async () => {
+        order.push("acquire");
+        return { release: async () => {} };
       },
-      flushPendingToolResultsAfterIdle: vi.fn(async () => {
-        order.push("flush");
-      }),
-      session: {
-        agent: {},
-        dispose: () => {
-          order.push("dispose");
-        },
-      },
-      sessionManager: {},
-      sessionLock: {
-        release: async () => {
-          order.push("release");
-        },
-      },
-      aborted: true,
       abortSettlePromise: settle.promise,
       runId: "run-1",
       sessionId: "session-1",
@@ -56,36 +40,24 @@ describe("cleanupEmbeddedAttemptResources", () => {
 
     await Promise.resolve();
 
-    expect(order).toEqual(["guard"]);
+    expect(order).toEqual([]);
 
     settle.resolve();
-    await cleanupPromise;
+    await cleanupLockPromise;
 
-    expect(order).toEqual(["guard", "flush", "release", "dispose"]);
+    expect(order).toEqual(["acquire"]);
   });
 
-  it("releases the lock after the aborted settle timeout", async () => {
+  it("acquires the cleanup lock after the aborted settle timeout", async () => {
     vi.useFakeTimers();
     vi.spyOn(log, "warn").mockImplementation(() => {});
     const order: string[] = [];
 
-    const cleanupPromise = cleanupEmbeddedAttemptResources({
-      flushPendingToolResultsAfterIdle: vi.fn(async () => {
-        order.push("flush");
-      }),
-      session: {
-        agent: {},
-        dispose: () => {
-          order.push("dispose");
-        },
+    const cleanupLockPromise = acquireEmbeddedAttemptCleanupSessionLock({
+      acquire: async () => {
+        order.push("acquire");
+        return { release: async () => {} };
       },
-      sessionManager: {},
-      sessionLock: {
-        release: async () => {
-          order.push("release");
-        },
-      },
-      aborted: true,
       abortSettlePromise: new Promise(() => {}),
       runId: "run-1",
       sessionId: "session-1",
@@ -95,9 +67,22 @@ describe("cleanupEmbeddedAttemptResources", () => {
     expect(order).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(1);
-    await cleanupPromise;
+    await cleanupLockPromise;
 
-    expect(order).toEqual(["flush", "release", "dispose"]);
+    expect(order).toEqual(["acquire"]);
+  });
+
+  it("acquires the cleanup lock immediately without pending abort work", async () => {
+    const acquire = vi.fn(async () => ({ release: async () => {} }));
+
+    await acquireEmbeddedAttemptCleanupSessionLock({
+      acquire,
+      abortSettlePromise: null,
+      runId: "run-1",
+      sessionId: "session-1",
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(1);
   });
 
   it("releases the lock before runtime teardown can hang", async () => {
@@ -137,26 +122,6 @@ describe("cleanupEmbeddedAttemptResources", () => {
     await runtimeDisposeStarted;
 
     expect(order).toEqual(["flush", "release", "dispose", "runtime-dispose-start"]);
-  });
-
-  it("does not wait for the settle promise on non-aborted cleanup", async () => {
-    const release = vi.fn(async () => {});
-
-    await cleanupEmbeddedAttemptResources({
-      flushPendingToolResultsAfterIdle: vi.fn(async () => {}),
-      session: {
-        agent: {},
-        dispose: vi.fn(),
-      },
-      sessionManager: {},
-      sessionLock: { release },
-      aborted: false,
-      abortSettlePromise: new Promise(() => {}),
-      runId: "run-1",
-      sessionId: "session-1",
-    });
-
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("still disposes resources when lock release fails", async () => {

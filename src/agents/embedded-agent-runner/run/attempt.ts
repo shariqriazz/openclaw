@@ -444,6 +444,7 @@ import {
 } from "./attempt.sessions-yield.js";
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
 import {
+  acquireEmbeddedAttemptCleanupSessionLock,
   buildEmbeddedSubscriptionParams,
   cleanupEmbeddedAttemptResources,
 } from "./attempt.subscription-cleanup.js";
@@ -6064,7 +6065,12 @@ export async function runEmbeddedAttempt(
           idleTimedOut ||
           timedOutDuringCompaction;
         const cleanupAbortLike = cleanupAborted || cleanupYieldAborted;
-        const cleanupSessionLock = await sessionLockController.acquireForCleanup({ session });
+        const cleanupSessionLock = await acquireEmbeddedAttemptCleanupSessionLock({
+          acquire: () => sessionLockController.acquireForCleanup({ session }),
+          abortSettlePromise: cleanupAborted ? buildAbortSettlePromise() : null,
+          runId: params.runId,
+          sessionId: params.sessionId,
+        });
         await cleanupEmbeddedAttemptResources({
           removeToolResultContextGuard,
           flushPendingToolResultsAfterIdle,
@@ -6077,10 +6083,7 @@ export async function runEmbeddedAttempt(
           // skip the idle wait and flush pending results synchronously so we can
           // release the session lock ASAP.
           aborted: cleanupAbortLike,
-          abortSettlePromise: cleanupAborted ? buildAbortSettlePromise() : null,
           skipSessionFlush: sessionLockController.hasSessionTakeover(),
-          runId: params.runId,
-          sessionId: params.sessionId,
         });
       } catch (err) {
         cleanupError = err;
