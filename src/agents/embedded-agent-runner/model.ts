@@ -852,7 +852,7 @@ function applyConfiguredProviderOverrides(params: {
 }
 type ExplicitModelResolution =
   | { kind: "resolved"; model: Model; source: "configured" }
-  | { kind: "resolved"; dropOnRuntimeMiss: boolean; model: Model; source: "registry" }
+  | { kind: "resolved"; model: Model; source: "registry" }
   | { kind: "suppressed" };
 
 function shouldSuppressInlineConfiguredModel(params: {
@@ -860,7 +860,6 @@ function shouldSuppressInlineConfiguredModel(params: {
   modelId: string;
   cfg?: OpenClawConfig;
   workspaceDir?: string;
-  baseUrl?: string;
 }): boolean {
   if (
     shouldUnconditionallySuppress({
@@ -872,19 +871,7 @@ function shouldSuppressInlineConfiguredModel(params: {
   ) {
     return true;
   }
-  if (
-    normalizeProviderId(params.provider) !== "openai" ||
-    normalizeLowercaseStringOrEmpty(params.modelId) !== "gpt-5.3-codex-spark"
-  ) {
-    return false;
-  }
-  return shouldSuppressBuiltInModel({
-    provider: params.provider,
-    id: params.modelId,
-    ...(params.cfg ? { config: params.cfg } : {}),
-    ...(params.baseUrl ? { baseUrl: params.baseUrl } : {}),
-    ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
-  });
+  return false;
 }
 
 function resolveExplicitModelWithRegistry(params: {
@@ -919,7 +906,6 @@ function resolveExplicitModelWithRegistry(params: {
         modelId,
         cfg,
         workspaceDir,
-        baseUrl: transport.baseUrl,
       })
     ) {
       return { kind: "suppressed" };
@@ -987,10 +973,6 @@ function resolveExplicitModelWithRegistry(params: {
     return {
       kind: "resolved",
       source: "registry",
-      dropOnRuntimeMiss:
-        normalizeProviderId(provider) === "openai" &&
-        modelId.trim().toLowerCase() === "gpt-5.3-codex-spark" &&
-        !effectiveBaseUrl,
       model: normalizeResolvedModel({
         provider,
         cfg,
@@ -1219,18 +1201,6 @@ function resolveRuntimePreferredSuppressedModel(params: {
   return resolvePluginDynamicModelWithRegistry({ ...params, runtimeHooks });
 }
 
-function shouldDropRuntimePreferredExplicitMiss(params: {
-  provider: string;
-  modelId: string;
-  explicitModel: ExplicitModelResolution;
-}): boolean {
-  return (
-    params.explicitModel.kind === "resolved" &&
-    params.explicitModel.source === "registry" &&
-    params.explicitModel.dropOnRuntimeMiss
-  );
-}
-
 function resolveConfiguredFallbackModel(params: {
   provider: string;
   modelId: string;
@@ -1308,7 +1278,6 @@ function resolveConfiguredFallbackModel(params: {
       modelId,
       cfg,
       workspaceDir,
-      baseUrl: fallbackTransport.baseUrl,
     })
   ) {
     return undefined;
@@ -1544,16 +1513,7 @@ export function resolveModelWithRegistry(params: {
     ) {
       return explicitModel.model;
     }
-    return (
-      resolvePluginDynamicModelWithRegistry(scopedParams) ??
-      (shouldDropRuntimePreferredExplicitMiss({
-        provider: scopedParams.provider,
-        modelId: scopedParams.modelId,
-        explicitModel,
-      })
-        ? undefined
-        : explicitModel.model)
-    );
+    return resolvePluginDynamicModelWithRegistry(scopedParams) ?? explicitModel.model;
   }
   const pluginDynamicModel = resolvePluginDynamicModelWithRegistry(scopedParams);
   if (pluginDynamicModel) {

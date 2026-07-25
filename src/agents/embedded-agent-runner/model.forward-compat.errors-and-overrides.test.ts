@@ -43,7 +43,9 @@ vi.mock("../model-suppression.js", () => ({
     }
     return new URL(baseUrl).hostname.toLowerCase() === "api.openai.com";
   },
-  shouldUnconditionallySuppress: () => false,
+  shouldUnconditionallySuppress: ({ provider, id }: { provider?: string; id?: string }) =>
+    (provider === "openai" || provider === "azure-openai-responses") &&
+    id?.trim().toLowerCase() === "gpt-5.3-codex-spark",
   buildSuppressedBuiltInModelError: ({ provider, id }: { provider?: string; id?: string }) => {
     if (
       (provider !== "openai" && provider !== "azure-openai-responses") ||
@@ -51,7 +53,7 @@ vi.mock("../model-suppression.js", () => ({
     ) {
       return undefined;
     }
-    return `Unknown model: ${provider}/gpt-5.3-codex-spark. gpt-5.3-codex-spark is available only through ChatGPT/Codex OAuth. Run \`openclaw models auth login --provider openai\` and use openai/gpt-5.3-codex-spark with that OAuth profile; OpenAI API-key auth cannot use this model.`;
+    return `Unknown model: ${provider}/gpt-5.3-codex-spark. gpt-5.3-codex-spark is retired in this OpenClaw build. Use openai/gpt-5.6-luna or another configured OpenAI model.`;
   },
 }));
 
@@ -68,7 +70,6 @@ import {
 } from "./model.forward-compat.test-support.js";
 import { resolveModel } from "./model.js";
 import {
-  buildOpenAICodexForwardCompatExpectation,
   makeModel,
   mockDiscoveredModel,
   mockOpenAICodexTemplateModel,
@@ -162,12 +163,12 @@ describe("resolveModel forward-compat errors and overrides", () => {
     );
   });
 
-  it("rejects direct openai gpt-5.3-codex-spark with a codex-only hint", () => {
+  it("rejects retired gpt-5.3-codex-spark", () => {
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent");
 
     expect(result.model).toBeUndefined();
     expect(result.error).toBe(
-      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is available only through ChatGPT/Codex OAuth. Run `openclaw models auth login --provider openai` and use openai/gpt-5.3-codex-spark with that OAuth profile; OpenAI API-key auth cannot use this model.",
+      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is retired in this OpenClaw build. Use openai/gpt-5.6-luna or another configured OpenAI model.",
     );
   });
 
@@ -188,7 +189,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     expect(result.model).toBeUndefined();
     expect(result.error).toBe(
-      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is available only through ChatGPT/Codex OAuth. Run `openclaw models auth login --provider openai` and use openai/gpt-5.3-codex-spark with that OAuth profile; OpenAI API-key auth cannot use this model.",
+      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is retired in this OpenClaw build. Use openai/gpt-5.6-luna or another configured OpenAI model.",
     );
   });
 
@@ -207,10 +208,8 @@ describe("resolveModel forward-compat errors and overrides", () => {
     } as unknown as OpenClawConfig;
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject(
-      buildOpenAICodexForwardCompatExpectation("gpt-5.3-codex-spark"),
-    );
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
   it("resolves suppressed openai gpt-5.3-codex-spark through model-scoped Codex runtime", () => {
@@ -229,10 +228,8 @@ describe("resolveModel forward-compat errors and overrides", () => {
     };
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject(
-      buildOpenAICodexForwardCompatExpectation("gpt-5.3-codex-spark"),
-    );
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
   it("keeps model-scoped Codex runtime blocked for explicit OpenAI API-key provider config", () => {
@@ -262,7 +259,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toContain("OpenAI API-key auth cannot use this model");
+    expect(result.error).toContain("retired");
   });
 
   it("keeps suppressed stale direct openai gpt-5.3-codex-spark catalog rows blocked", () => {
@@ -280,7 +277,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent");
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toContain("ChatGPT/Codex OAuth");
+    expect(result.error).toContain("retired");
   });
 
   it("keeps stale persisted openai gpt-5.3-codex-spark rows blocked without transport metadata", () => {
@@ -296,7 +293,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent");
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toContain("ChatGPT/Codex OAuth");
+    expect(result.error).toContain("retired");
   });
 
   it("keeps configured custom openai gpt-5.3-codex-spark rows when not direct OpenAI API", () => {
@@ -320,13 +317,8 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject({
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-responses",
-      baseUrl: "https://proxy.example/v1",
-    });
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
   it("rejects configured direct openai gpt-5.3-codex-spark rows", () => {
@@ -351,8 +343,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toContain("ChatGPT/Codex OAuth");
-    expect(result.error).toContain("OpenAI API-key auth cannot use this model");
+    expect(result.error).toContain("retired");
   });
 
   it("keeps configured custom openai gpt-5.3-codex-spark rows that omit api", () => {
@@ -374,13 +365,8 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject({
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-responses",
-      baseUrl: "https://proxy.example/v1",
-    });
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
   it("keeps registry openai gpt-5.3-codex-spark rows on custom provider endpoints", () => {
@@ -407,13 +393,8 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent", cfg);
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject({
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-responses",
-      baseUrl: "https://proxy.example/v1",
-    });
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
   it("checks registry baseUrl before suppressing openai gpt-5.3-codex-spark rows", () => {
@@ -430,16 +411,11 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     const result = resolveModelForTest("openai", "gpt-5.3-codex-spark", "/tmp/agent");
 
-    expect(result.error).toBeUndefined();
-    expect(result.model).toMatchObject({
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-responses",
-      baseUrl: "https://proxy.example/v1",
-    });
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("retired");
   });
 
-  it("rejects azure openai gpt-5.3-codex-spark with a codex-only hint", () => {
+  it("rejects retired Spark through the Azure alias", () => {
     const result = resolveModelForTest(
       "azure-openai-responses",
       "gpt-5.3-codex-spark",
@@ -448,7 +424,7 @@ describe("resolveModel forward-compat errors and overrides", () => {
 
     expect(result.model).toBeUndefined();
     expect(result.error).toBe(
-      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is available only through ChatGPT/Codex OAuth. Run `openclaw models auth login --provider openai` and use openai/gpt-5.3-codex-spark with that OAuth profile; OpenAI API-key auth cannot use this model.",
+      "Unknown model: openai/gpt-5.3-codex-spark. gpt-5.3-codex-spark is retired in this OpenClaw build. Use openai/gpt-5.6-luna or another configured OpenAI model.",
     );
   });
 

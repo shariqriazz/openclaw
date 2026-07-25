@@ -184,15 +184,14 @@ describe("OpenAI plugin manifest", () => {
     expect(choices.map((choice) => choice.groupHint)).not.toContain("API key or Codex sign-in");
   });
 
-  it("keeps Spark suppression conditional on direct OpenAI API rows", () => {
+  it("suppresses retired Spark routing unconditionally", () => {
     const sparkSuppression = manifest.modelCatalog?.suppressions?.find(
       (suppression) =>
         suppression.provider === "openai" && suppression.model === "gpt-5.3-codex-spark",
     );
 
-    expect(sparkSuppression?.when).toEqual({
-      baseUrlHosts: ["api.openai.com"],
-    });
+    expect(sparkSuppression?.when).toBeUndefined();
+    expect(sparkSuppression?.reason).toContain("retired");
   });
 
   it("keeps auth choice copy aligned with provider wizard metadata", () => {

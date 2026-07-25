@@ -119,6 +119,30 @@ describe("OpenAI provider Codex transport hooks", () => {
     },
   );
 
+  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
+    "resolves internal %s-1m through its canonical wire model",
+    (canonicalModelId) => {
+      const provider = buildOpenAIProvider();
+
+      const model = provider.resolveDynamicModel?.({
+        provider: "openai",
+        modelId: `${canonicalModelId}-1m`,
+        authProfileMode: "oauth",
+        modelRegistry: { find: () => null },
+      } as never);
+
+      expect(model).toMatchObject({
+        provider: "openai",
+        id: canonicalModelId,
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        contextWindow: 1_000_000,
+        contextTokens: 872_000,
+        maxTokens: 128_000,
+      });
+    },
+  );
+
   it("does not invent a bare GPT-5.6 alias for the Codex transport", () => {
     const provider = buildOpenAIProvider();
 

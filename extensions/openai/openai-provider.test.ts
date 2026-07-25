@@ -1035,7 +1035,7 @@ describe("buildOpenAIProvider", () => {
     });
   });
 
-  it("restores gpt-5.3-codex-spark only through ChatGPT/Codex OAuth routing", () => {
+  it("does not restore retired gpt-5.3-codex-spark routing", () => {
     const provider = buildOpenAIProvider();
 
     const oauthModel = provider.resolveDynamicModel?.({
@@ -1045,57 +1045,15 @@ describe("buildOpenAIProvider", () => {
       authProfileId: "openai:work",
       authProfileMode: "oauth",
     } as never);
-    const apiKeyModel = provider.resolveDynamicModel?.({
-      provider: "openai",
-      modelId: "gpt-5.3-codex-spark",
-      modelRegistry: { find: () => null },
-      providerConfig: {
-        auth: "api-key",
-      },
-    } as never);
     const runtimeModel = provider.resolveDynamicModel?.({
       provider: "openai",
       modelId: "gpt-5.3-codex-spark",
       modelRegistry: { find: () => null },
       agentRuntimeId: "codex",
     } as never);
-    const apiKeyRuntimeModel = provider.resolveDynamicModel?.({
-      provider: "openai",
-      modelId: "gpt-5.3-codex-spark",
-      modelRegistry: { find: () => null },
-      agentRuntimeId: "codex",
-      authProfileId: "openai:api-key",
-      authProfileMode: "api_key",
-    } as never);
-    const unknownModelHint = provider.buildUnknownModelHint?.({
-      provider: "openai",
-      modelId: "gpt-5.3-codex-spark",
-    } as never);
 
-    expectFields(oauthModel, {
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-chatgpt-responses",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      input: ["text"],
-      contextWindow: 128_000,
-      contextTokens: 128_000,
-      maxTokens: 128_000,
-    });
-    expectFields(runtimeModel, {
-      provider: "openai",
-      id: "gpt-5.3-codex-spark",
-      api: "openai-chatgpt-responses",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      input: ["text"],
-      contextWindow: 128_000,
-      contextTokens: 128_000,
-      maxTokens: 128_000,
-    });
-    expect(apiKeyModel).toBeUndefined();
-    expect(apiKeyRuntimeModel).toBeUndefined();
-    expect(unknownModelHint).toContain("ChatGPT/Codex OAuth");
-    expect(unknownModelHint).toContain("OpenAI API-key auth cannot use this model");
+    expect(oauthModel).toBeUndefined();
+    expect(runtimeModel).toBeUndefined();
   });
 
   it("resolves chat-latest as an explicit direct API model override", () => {
@@ -1295,7 +1253,7 @@ describe("buildOpenAIProvider", () => {
       provider
         .resolveThinkingProfile?.({
           provider: "openai",
-          modelId: "gpt-5.3-codex-spark",
+          modelId: "gpt-5.4",
         } as never)
         ?.levels.map((level) => level.id),
     ).toContain("xhigh");
@@ -1427,7 +1385,7 @@ describe("buildOpenAIProvider", () => {
         provider: "openai",
         modelId: "gpt-5.3-codex-spark",
       } as never),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       codexProvider.isModernModelRef?.({
         provider: "openai",

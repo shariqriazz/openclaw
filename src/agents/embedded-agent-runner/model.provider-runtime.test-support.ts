@@ -300,7 +300,6 @@ function buildDynamicModel(
     }
     case "openai": {
       const isLegacyGpt54Alias = lower === "gpt-5.4-codex";
-      const isSparkModel = lower === "gpt-5.3-codex-spark";
       const exactModel = params.modelRegistry.find("openai", modelId) as ResolvedModelLike | null;
       const explicitResponsesAuth =
         params.authProfileMode === "api_key" ||
@@ -360,13 +359,11 @@ function buildDynamicModel(
               lower === "gpt-5.4-pro" ||
               lower === "gpt-5.4-mini"
             ? findTemplate(params, "openai", ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex"])
-            : lower === "gpt-5.3-codex-spark"
-              ? findTemplate(params, "openai", ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex"])
-              : findTemplate(params, "openai", ["gpt-5.4"]);
-      const templateSelectsChatGpt = !isSparkModel && isOpenAIChatGptModelTemplate(codexTemplate);
+            : findTemplate(params, "openai", ["gpt-5.4"]);
+      const templateSelectsChatGpt = isOpenAIChatGptModelTemplate(codexTemplate);
       if (
         isLegacyGpt54Alias ||
-        (lower.includes("-codex") && !isSparkModel) ||
+        lower.includes("-codex") ||
         providerConfigSelectsChatGpt ||
         templateSelectsChatGpt
       ) {
@@ -444,23 +441,6 @@ function buildDynamicModel(
               cost: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
               contextWindow: 400_000,
               contextTokens: 272_000,
-              maxTokens: 128_000,
-            },
-            fallback,
-          );
-        }
-        if (lower === "gpt-5.3-codex-spark") {
-          return cloneTemplate(
-            codexTemplate,
-            modelId,
-            {
-              provider: "openai",
-              api: "openai-chatgpt-responses",
-              baseUrl: chatGptBaseUrl,
-              reasoning: true,
-              input: ["text"],
-              cost: OPENROUTER_FALLBACK_COST,
-              contextWindow: 128_000,
               maxTokens: 128_000,
             },
             fallback,
@@ -744,7 +724,7 @@ export function createProviderRuntimeTestMock(options: ProviderRuntimeTestMockOp
       context: { modelId: string };
     }) =>
       params.provider === "openai" &&
-      ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.3-codex-spark"].includes(
+      ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro"].includes(
         params.context.modelId.trim().toLowerCase(),
       ),
     prepareProviderDynamicModel: async (params: {

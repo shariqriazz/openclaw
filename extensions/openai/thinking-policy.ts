@@ -32,7 +32,6 @@ const OPENAI_CODEX_XHIGH_MODEL_IDS = [
   "gpt-5.5-pro",
   "gpt-5.4",
   "gpt-5.4-pro",
-  "gpt-5.3-codex-spark",
 ] as const;
 
 const OPENAI_UNIFIED_XHIGH_MODEL_IDS = [

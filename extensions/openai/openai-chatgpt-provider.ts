@@ -51,6 +51,7 @@ const OPENAI_CODEX_BASE_URL = OPENAI_CODEX_RESPONSES_BASE_URL;
 const OPENAI_CODEX_LOGIN_ASSISTANT_PRIORITY = -30;
 const OPENAI_CODEX_DEVICE_PAIRING_ASSISTANT_PRIORITY = -10;
 const OPENAI_CODEX_GPT_56_MODEL_IDS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
+const OPENAI_CODEX_GPT_56_WIDE_SUFFIX = "-1m";
 const OPENAI_CODEX_GPT_56_THINKING_LEVEL_MAP = {
   off: null,
   xhigh: "xhigh",
@@ -62,8 +63,9 @@ const OPENAI_CODEX_GPT_54_MODEL_ID = "gpt-5.4";
 const OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID = "gpt-5.4-codex";
 const OPENAI_CODEX_GPT_54_MINI_MODEL_ID = "gpt-5.4-mini";
 const OPENAI_CODEX_GPT_54_PRO_MODEL_ID = "gpt-5.4-pro";
-const OPENAI_CODEX_GPT_53_SPARK_MODEL_ID = "gpt-5.3-codex-spark";
 const OPENAI_CODEX_GPT_56_CONTEXT_TOKENS = 372_000;
+const OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW = 1_000_000;
+const OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS = 872_000;
 const OPENAI_CODEX_GPT_55_CODEX_CONTEXT_TOKENS = 400_000;
 const OPENAI_CODEX_GPT_55_DEFAULT_RUNTIME_CONTEXT_TOKENS = 272_000;
 const OPENAI_CODEX_GPT_55_PRO_NATIVE_CONTEXT_TOKENS = 1_000_000;
@@ -71,7 +73,6 @@ const OPENAI_CODEX_GPT_55_PRO_DEFAULT_CONTEXT_TOKENS = 272_000;
 const OPENAI_CODEX_GPT_54_NATIVE_CONTEXT_TOKENS = 1_050_000;
 const OPENAI_CODEX_GPT_54_DEFAULT_CONTEXT_TOKENS = 272_000;
 const OPENAI_CODEX_GPT_54_MINI_NATIVE_CONTEXT_TOKENS = 400_000;
-const OPENAI_CODEX_GPT_53_SPARK_CONTEXT_TOKENS = 128_000;
 const OPENAI_CODEX_GPT_54_MAX_TOKENS = 128_000;
 const OPENAI_CODEX_GPT_55_PRO_COST = {
   input: 30,
@@ -115,7 +116,6 @@ const OPENAI_CODEX_MODERN_MODEL_IDS = [
   OPENAI_CODEX_GPT_54_MODEL_ID,
   OPENAI_CODEX_GPT_54_PRO_MODEL_ID,
   OPENAI_CODEX_GPT_54_MINI_MODEL_ID,
-  OPENAI_CODEX_GPT_53_SPARK_MODEL_ID,
 ] as const;
 const OPENAI_CODEX_IMAGE_CAPABLE_MODEL_IDS = [
   ...OPENAI_CODEX_GPT_56_MODEL_IDS,
@@ -199,14 +199,46 @@ function applyOpenAICodexImageInputCapability(params: {
   };
 }
 
+function resolveGpt56CodexVariant(modelId: string):
+  | {
+      canonicalModelId: (typeof OPENAI_CODEX_GPT_56_MODEL_IDS)[number];
+      contextWindow: number;
+      contextTokens: number;
+    }
+  | undefined {
+  const lowerModelId = normalizeLowercaseStringOrEmpty(modelId);
+  const wide = lowerModelId.endsWith(OPENAI_CODEX_GPT_56_WIDE_SUFFIX);
+  const canonicalModelId = (
+    wide ? lowerModelId.slice(0, -OPENAI_CODEX_GPT_56_WIDE_SUFFIX.length) : lowerModelId
+  ) as (typeof OPENAI_CODEX_GPT_56_MODEL_IDS)[number];
+  if (!OPENAI_CODEX_GPT_56_MODEL_IDS.includes(canonicalModelId)) {
+    return undefined;
+  }
+  return {
+    canonicalModelId,
+    contextWindow: wide
+      ? OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW
+      : OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
+    contextTokens: wide
+      ? OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS
+      : OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
+  };
+}
+
 function normalizeCodexTransport(model: ProviderRuntimeModel): ProviderRuntimeModel {
   const lowerModelId = normalizeLowercaseStringOrEmpty(model.id);
+  const gpt56Variant = resolveGpt56CodexVariant(lowerModelId);
   const canonicalModelId =
-    lowerModelId === OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID ? OPENAI_CODEX_GPT_54_MODEL_ID : model.id;
-  const canonicalName =
-    normalizeLowercaseStringOrEmpty(model.name) === OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID
+    gpt56Variant?.canonicalModelId ??
+    (lowerModelId === OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID
       ? OPENAI_CODEX_GPT_54_MODEL_ID
-      : model.name;
+      : model.id);
+  const canonicalName =
+    gpt56Variant && normalizeLowercaseStringOrEmpty(model.name) === lowerModelId
+      ? gpt56Variant.canonicalModelId
+      : normalizeLowercaseStringOrEmpty(model.name) === OPENAI_CODEX_GPT_54_LEGACY_MODEL_ID
+        ? OPENAI_CODEX_GPT_54_MODEL_ID
+        : model.name;
   const normalizedTransport = normalizeCodexTransportFields({
     api: model.api,
     baseUrl: model.baseUrl,
@@ -234,19 +266,22 @@ function resolveCodexForwardCompatModel(ctx: ProviderResolveDynamicModelContext)
   const trimmedModelId = ctx.modelId.trim();
   const lower = normalizeLowercaseStringOrEmpty(trimmedModelId);
   const synthBaseUrl = ctx.providerConfig?.baseUrl ?? OPENAI_CODEX_BASE_URL;
+  const gpt56Variant = resolveGpt56CodexVariant(lower);
 
-  if (OPENAI_CODEX_GPT_56_MODEL_IDS.some((modelId) => modelId === lower)) {
-    const model = ctx.modelRegistry.find(PROVIDER_ID, trimmedModelId) as
+  if (gpt56Variant) {
+    const model = (ctx.modelRegistry.find(PROVIDER_ID, trimmedModelId) ??
+      ctx.modelRegistry.find(PROVIDER_ID, gpt56Variant.canonicalModelId)) as
       | ProviderRuntimeModel
       | undefined;
     const registeredModel = withDefaultCodexContextMetadata({
       model: withCodexTransport(model, synthBaseUrl),
-      contextWindow: OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
-      contextTokens: OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
+      contextWindow: gpt56Variant.contextWindow,
+      contextTokens: gpt56Variant.contextTokens,
     });
     if (registeredModel) {
       return normalizeModelCompat({
         ...registeredModel,
+        id: gpt56Variant.canonicalModelId,
         thinkingLevelMap: {
           ...OPENAI_CODEX_GPT_56_THINKING_LEVEL_MAP,
           ...registeredModel.thinkingLevelMap,
@@ -254,16 +289,16 @@ function resolveCodexForwardCompatModel(ctx: ProviderResolveDynamicModelContext)
       } as ProviderRuntimeModel);
     }
     return normalizeModelCompat({
-      id: trimmedModelId,
-      name: trimmedModelId,
+      id: gpt56Variant.canonicalModelId,
+      name: gpt56Variant.canonicalModelId,
       api: "openai-chatgpt-responses",
       provider: PROVIDER_ID,
       baseUrl: synthBaseUrl,
       reasoning: true,
       input: ["text", "image"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
-      contextTokens: OPENAI_CODEX_GPT_56_CONTEXT_TOKENS,
+      contextWindow: gpt56Variant.contextWindow,
+      contextTokens: gpt56Variant.contextTokens,
       maxTokens: OPENAI_CODEX_GPT_54_MAX_TOKENS,
       thinkingLevelMap: OPENAI_CODEX_GPT_56_THINKING_LEVEL_MAP,
     } as ProviderRuntimeModel);
@@ -329,15 +364,6 @@ function resolveCodexForwardCompatModel(ctx: ProviderResolveDynamicModelContext)
     patch = {
       contextWindow: OPENAI_CODEX_GPT_54_MINI_NATIVE_CONTEXT_TOKENS,
       contextTokens: OPENAI_CODEX_GPT_54_DEFAULT_CONTEXT_TOKENS,
-      maxTokens: OPENAI_CODEX_GPT_54_MAX_TOKENS,
-      cost: OPENAI_CODEX_GPT_54_MINI_COST,
-    };
-  } else if (lower === OPENAI_CODEX_GPT_53_SPARK_MODEL_ID) {
-    templateIds = OPENAI_CODEX_GPT_54_CATALOG_SYNTH_TEMPLATE_MODEL_IDS;
-    patch = {
-      input: ["text"],
-      contextWindow: OPENAI_CODEX_GPT_53_SPARK_CONTEXT_TOKENS,
-      contextTokens: OPENAI_CODEX_GPT_53_SPARK_CONTEXT_TOKENS,
       maxTokens: OPENAI_CODEX_GPT_54_MAX_TOKENS,
       cost: OPENAI_CODEX_GPT_54_MINI_COST,
     };
@@ -640,15 +666,16 @@ export function buildOpenAICodexProviderHooks(): Pick<
         return false;
       }
       const id = ctx.modelId.trim().toLowerCase();
-      return [
-        ...OPENAI_CODEX_GPT_56_MODEL_IDS,
-        OPENAI_CODEX_GPT_55_MODEL_ID,
-        OPENAI_CODEX_GPT_55_PRO_MODEL_ID,
-        OPENAI_CODEX_GPT_54_MODEL_ID,
-        OPENAI_CODEX_GPT_54_PRO_MODEL_ID,
-        OPENAI_CODEX_GPT_54_MINI_MODEL_ID,
-        OPENAI_CODEX_GPT_53_SPARK_MODEL_ID,
-      ].includes(id);
+      return (
+        Boolean(resolveGpt56CodexVariant(id)) ||
+        [
+          OPENAI_CODEX_GPT_55_MODEL_ID,
+          OPENAI_CODEX_GPT_55_PRO_MODEL_ID,
+          OPENAI_CODEX_GPT_54_MODEL_ID,
+          OPENAI_CODEX_GPT_54_PRO_MODEL_ID,
+          OPENAI_CODEX_GPT_54_MINI_MODEL_ID,
+        ].includes(id)
+      );
     },
     ...buildOpenAIResponsesProviderHooks(),
     resolveReasoningOutputMode: () => "native",
@@ -689,6 +716,20 @@ export function buildOpenAICodexProviderHooks(): Pick<
         templateIds: OPENAI_CODEX_GPT_55_PRO_TEMPLATE_MODEL_IDS,
       });
       return [
+        ...OPENAI_CODEX_GPT_56_MODEL_IDS.map((modelId) => {
+          const template = findCatalogTemplate({
+            entries: ctx.entries,
+            providerId: PROVIDER_ID,
+            templateIds: [modelId],
+          });
+          return buildOpenAISyntheticCatalogEntry(template, {
+            id: `${modelId}${OPENAI_CODEX_GPT_56_WIDE_SUFFIX}`,
+            reasoning: true,
+            input: ["text", "image"],
+            contextWindow: OPENAI_CODEX_GPT_56_WIDE_CONTEXT_WINDOW,
+            contextTokens: OPENAI_CODEX_GPT_56_WIDE_CONTEXT_TOKENS,
+          });
+        }),
         buildOpenAISyntheticCatalogEntry(gpt55ProTemplate, {
           id: OPENAI_CODEX_GPT_55_PRO_MODEL_ID,
           reasoning: true,
