@@ -1152,8 +1152,14 @@ export class EmbeddedAttemptSessionTakeoverError extends Error {
 }
 
 export type EmbeddedAttemptSessionLockController = {
-  canAdvanceSessionEntryCache(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
-  publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
+  canAdvanceSessionEntryCache(
+    snapshot: OwnedSessionTranscriptCacheSnapshot,
+    options?: { allowRetainedLock?: boolean },
+  ): boolean;
+  publishOwnedSessionFileSnapshot(
+    snapshot: OwnedSessionTranscriptCacheSnapshot,
+    options?: { allowRetainedLock?: boolean },
+  ): boolean;
   publishValidatedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean;
   readTrustedCurrentSessionFileSnapshot(): Promise<TrustedSessionFileSnapshot | undefined>;
   releaseForPrompt(): Promise<void>;
@@ -1942,9 +1948,15 @@ export async function createEmbeddedAttemptSessionLockController(params: {
   }
 
   return {
-    canAdvanceSessionEntryCache(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean {
+    canAdvanceSessionEntryCache(
+      snapshot: OwnedSessionTranscriptCacheSnapshot,
+      options?: { allowRetainedLock?: boolean },
+    ): boolean {
       const state = activeWriteLock.getStore();
-      if (takeoverDetected || state?.active !== true || !state.scope.active) {
+      const hasActiveWriteScope = state?.active === true && state.scope.active;
+      const hasAuthorizedRetainedLock =
+        options?.allowRetainedLock === true && Boolean(heldLock) && !heldLockDraining;
+      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedRetainedLock)) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };
@@ -1953,9 +1965,15 @@ export async function createEmbeddedAttemptSessionLockController(params: {
         isTrustedSessionFileState(sessionFileFenceKey, fingerprint)
       );
     },
-    publishOwnedSessionFileSnapshot(snapshot: OwnedSessionTranscriptCacheSnapshot): boolean {
+    publishOwnedSessionFileSnapshot(
+      snapshot: OwnedSessionTranscriptCacheSnapshot,
+      options?: { allowRetainedLock?: boolean },
+    ): boolean {
       const state = activeWriteLock.getStore();
-      if (takeoverDetected || state?.active !== true || !state.scope.active) {
+      const hasActiveWriteScope = state?.active === true && state.scope.active;
+      const hasAuthorizedRetainedLock =
+        options?.allowRetainedLock === true && Boolean(heldLock) && !heldLockDraining;
+      if (takeoverDetected || (!hasActiveWriteScope && !hasAuthorizedRetainedLock)) {
         return false;
       }
       const fingerprint: SessionFileFingerprint = { exists: true, ...snapshot };

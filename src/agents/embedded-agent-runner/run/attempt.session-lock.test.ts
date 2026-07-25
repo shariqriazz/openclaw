@@ -2287,6 +2287,96 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(controller.hasSessionTakeover()).toBe(false);
   });
 
+  it("keeps parallel tool-loop appends owned through the next model boundary", async () => {
+    const sessionFile = await createTempSessionFile();
+    let sessionManager: SessionManager;
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock,
+      lockOptions: { ...lockOptions, sessionFile },
+      mergePromptReleasedSessionEntries: (entries) =>
+        sessionManager.mergePromptReleasedSessionEntries(entries, { persistLeaf: true }),
+      reloadPromptReleasedSessionFile: () => sessionManager.setSessionFile(sessionFile),
+    });
+    sessionManager = guardSessionManager(SessionManager.open(sessionFile), {
+      withCompactionPersistence: (append, validateAppend) =>
+        controller.withOwnedSessionFileWrite(append, validateAppend),
+    });
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "ready" }],
+      api: "messages",
+      provider: "openclaw",
+      model: "session-lock-test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    });
+    await controller.releaseForPrompt();
+    await controller.reacquireAfterPrompt();
+
+    await withOwnedSessionTranscriptWrites(
+      {
+        sessionFile,
+        canAdvanceSessionEntryCache: (snapshot) =>
+          controller.canAdvanceSessionEntryCache(snapshot, { allowRetainedLock: true }),
+        publishSessionFileSnapshot: (snapshot) =>
+          controller.publishOwnedSessionFileSnapshot(snapshot, { allowRetainedLock: true }),
+        withSessionWriteLock: (operation, options) =>
+          controller.withSessionWriteLock(operation, options),
+      },
+      async () => {
+        sessionManager.appendMessage({
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "call-1", name: "exec", arguments: { command: "one" } },
+            { type: "toolCall", id: "call-2", name: "exec", arguments: { command: "two" } },
+            { type: "toolCall", id: "call-3", name: "exec", arguments: { command: "three" } },
+          ],
+          api: "messages",
+          provider: "openclaw",
+          model: "session-lock-test",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "toolUse",
+          timestamp: 2,
+        });
+        await Promise.all(
+          ["call-1", "call-2", "call-3"].map(async (toolCallId, index) => {
+            sessionManager.appendMessage({
+              role: "toolResult",
+              toolCallId,
+              toolName: "exec",
+              content: [{ type: "text", text: `result ${index + 1}` }],
+              details: { completedAt: new Date(`2026-07-25T19:49:38.50${index}Z`) },
+              isError: false,
+              timestamp: index + 3,
+            });
+          }),
+        );
+      },
+    );
+
+    await controller.releaseForPrompt();
+    await expect(controller.reacquireAfterPrompt()).resolves.toBeUndefined();
+    const cleanupLock = await controller.acquireForCleanup();
+    await cleanupLock.release();
+    expect(controller.hasSessionTakeover()).toBe(false);
+    await controller.dispose();
+  });
+
   it("refreshes the prompt fence after an owned session manager compaction append", async () => {
     const sessionFile = await createTempSessionFile();
     const release = vi.fn(async () => {});

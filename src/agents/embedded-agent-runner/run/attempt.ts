@@ -2209,9 +2209,11 @@ export async function runEmbeddedAttempt(
       sessionFile: params.sessionFile,
       sessionKey: params.sessionKey,
       canAdvanceSessionEntryCache: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-        sessionLockController.canAdvanceSessionEntryCache(snapshot),
+        sessionLockController.canAdvanceSessionEntryCache(snapshot, { allowRetainedLock: true }),
       publishSessionFileSnapshot: (snapshot: OwnedSessionTranscriptCacheSnapshot) =>
-        sessionLockController.publishOwnedSessionFileSnapshot(snapshot),
+        sessionLockController.publishOwnedSessionFileSnapshot(snapshot, {
+          allowRetainedLock: true,
+        }),
       withSessionWriteLock: <T>(
         operation: () => Promise<T> | T,
         options?: OwnedSessionTranscriptWriteOptions<T>,

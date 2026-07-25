@@ -671,7 +671,7 @@ describe("SessionManager.open", () => {
               sessionFile,
               canAdvanceSessionEntryCache: () => {
                 cacheAdvanceChecks += 1;
-                return true;
+                return false;
               },
               publishSessionFileSnapshot,
               withSessionWriteLock: async (run) => await run(),
@@ -690,7 +690,7 @@ describe("SessionManager.open", () => {
             .filter((entry) => entry.type === "message")
             .map((entry) => readMessageContent(entry)),
         ).toEqual(name === "tool_result_details" ? ["changed 1", "ok"] : ["changed 1"]);
-        expect(cacheAdvanceChecks, `${name}/${serializerCase.name}`).toBe(0);
+        expect(cacheAdvanceChecks, `${name}/${serializerCase.name}`).toBe(1);
         expect(publishSessionFileSnapshot, `${name}/${serializerCase.name}`).not.toHaveBeenCalled();
       }
     }

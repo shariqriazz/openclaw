@@ -2153,15 +2153,16 @@ export class SessionManager {
       const beforeAppendSnapshot = readSessionFileSnapshotIfExists(this.sessionFile);
       const invalidateSerializedPrefixCache =
         options?.invalidateSerializedPrefixCache === true || serializationCanRunUserCode;
-      const canPublishOwnedAppend =
-        !serializationCanRunUserCode &&
-        Boolean(
-          beforeAppendSnapshot &&
-          canAdvanceOwnedSessionEntryCache({
-            sessionFile: this.sessionFile,
-            snapshot: beforeAppendSnapshot,
-          }),
-        );
+      // Serialization happens before this snapshot. Custom serializers still
+      // invalidate the parsed-entry cache, but they do not prevent publishing
+      // the subsequent exact append when the owner validates this snapshot.
+      const canPublishOwnedAppend = Boolean(
+        beforeAppendSnapshot &&
+        canAdvanceOwnedSessionEntryCache({
+          sessionFile: this.sessionFile,
+          snapshot: beforeAppendSnapshot,
+        }),
+      );
       const cacheOwnedAppend = canPublishOwnedAppend && !invalidateSerializedPrefixCache;
       const serializedAppend = appendSerializedJsonlEntrySync(this.sessionFile, serializedEntry, {
         prefixNewline: sessionFileNeedsAppendSeparator(this.sessionFile, beforeAppendSnapshot),
