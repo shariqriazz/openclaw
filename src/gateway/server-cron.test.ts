@@ -5,6 +5,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { readCronRunLogEntriesSync } from "../cron/run-log.js";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
 
 type RunCronIsolatedAgentTurnMock = (params: {
@@ -295,7 +296,8 @@ describe("buildGatewayCronService", () => {
     sendCronAnnouncePayloadStrictMock.mockClear();
     runCronIsolatedAgentTurnMock.mockClear();
     cleanupBrowserSessionsForLifecycleEndMock.mockClear();
-    runCronChangedMock.mockClear();
+    runCronChangedMock.mockReset();
+    runCronChangedMock.mockImplementation(async () => {});
     getGlobalHookRunnerMock.mockClear();
     abortAndDrainEmbeddedAgentRunMock.mockClear();
     retireSessionMcpRuntimeMock.mockClear();
@@ -674,6 +676,15 @@ describe("buildGatewayCronService", () => {
 
       runCronChangedMock.mockClear();
       await state.cron.run(job.id, "force");
+      await vi.waitFor(() => {
+        expect(
+          runCronChangedMock.mock.calls.some(([event]) =>
+            event && typeof event === "object" && "action" in event
+              ? event.action === "finished"
+              : false,
+          ),
+        ).toBe(true);
+      });
 
       const event = runCronChangedMock.mock.calls
         .map((_, index) =>
@@ -770,6 +781,15 @@ describe("buildGatewayCronService", () => {
 
       runCronChangedMock.mockClear();
       await state.cron.run(job.id, "force");
+      await vi.waitFor(() => {
+        expect(
+          runCronChangedMock.mock.calls.some(([event]) =>
+            event && typeof event === "object" && "action" in event
+              ? event.action === "finished"
+              : false,
+          ),
+        ).toBe(true);
+      });
 
       expect(sendCronAnnouncePayloadStrictMock).not.toHaveBeenCalled();
 
@@ -782,6 +802,54 @@ describe("buildGatewayCronService", () => {
         )
         .find((hookEvent) => hookEvent.action === "finished");
       expect(event?.summary).toBe(summary);
+    } finally {
+      state.cron.stop();
+    }
+  });
+
+  it("persists exact run identity before finished hook delivery", async () => {
+    const cfg = createCronConfig("server-cron-finished-persist-order");
+    loadConfigMock.mockReturnValue(cfg);
+    const storePath = cfg.cron?.store;
+    expect(storePath).toBeTypeOf("string");
+
+    const state = buildGatewayCronService({
+      cfg,
+      deps: {} as CliDeps,
+      broadcast: () => {},
+    });
+    try {
+      const job = await state.cron.add({
+        name: "persist-before-hook",
+        enabled: true,
+        deleteAfterRun: false,
+        schedule: { kind: "at", at: new Date(1).toISOString() },
+        sessionTarget: "isolated",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "agentTurn", message: "report" },
+      });
+
+      let observedPersistedRun = false;
+      runCronChangedMock.mockImplementation(async (event: unknown) => {
+        const hookEvent = requireRecord(event, "cron_changed event");
+        if (hookEvent.action !== "finished") {
+          return;
+        }
+        const entries = readCronRunLogEntriesSync({
+          storePath: storePath as string,
+          jobId: job.id,
+        });
+        observedPersistedRun = entries.some(
+          (entry) =>
+            entry.runId === hookEvent.runId &&
+            entry.sessionId === hookEvent.sessionId &&
+            entry.sessionKey === hookEvent.sessionKey &&
+            entry.runAtMs === hookEvent.runAtMs,
+        );
+      });
+
+      await state.cron.run(job.id, "force");
+      await vi.waitFor(() => expect(observedPersistedRun).toBe(true));
     } finally {
       state.cron.stop();
     }

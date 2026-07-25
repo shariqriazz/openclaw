@@ -977,8 +977,24 @@ export type PluginHookGatewayCronRemoveResult = {
   removed?: boolean;
 };
 
+export type PluginHookGatewayActiveCronRun = {
+  jobId: string;
+  runAtMs?: number;
+  runId?: string;
+  sessionId?: string;
+  sessionKey?: string;
+};
+
+export type PluginHookGatewayFinishedCronRun = PluginHookGatewayActiveCronRun & {
+  durationMs?: number;
+  status?: PluginHookGatewayCronRunStatus;
+  deliveryStatus?: PluginHookGatewayCronDeliveryStatus;
+};
+
 export type PluginHookGatewayCronService = {
   list: (opts?: { includeDisabled?: boolean }) => Promise<PluginHookGatewayCronJob[]>;
+  listActiveRuns: () => PluginHookGatewayActiveCronRun[];
+  listFinishedRuns: (opts?: { limit?: number }) => PluginHookGatewayFinishedCronRun[];
   add: (input: PluginHookGatewayCronCreateInput) => Promise<unknown>;
   update: (id: string, patch: PluginHookGatewayCronUpdateInput) => Promise<unknown>;
   remove: (id: string) => Promise<PluginHookGatewayCronRemoveResult>;

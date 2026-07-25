@@ -15,8 +15,20 @@ export type CronActiveJobMarker = {
   jobId: string;
   generation: number;
   token: number;
+  runAtMs?: number;
+  runId?: string;
+  sessionId?: string;
+  sessionKey?: string;
   legacy?: boolean;
   preserveAcrossGenerationAdvance?: boolean;
+};
+
+export type CronActiveRunSnapshot = {
+  jobId: string;
+  runAtMs?: number;
+  runId?: string;
+  sessionId?: string;
+  sessionKey?: string;
 };
 
 function getCronActiveJobState(): CronActiveJobState {
@@ -82,7 +94,13 @@ function notifyActiveCronJobWaitersIfEmpty(state: CronActiveJobState) {
 /** Marks a cron job id as currently executing for duplicate-run suppression. */
 export function markCronJobActive(
   jobId: string,
-  opts?: { preserveAcrossGenerationAdvance?: boolean },
+  opts?: {
+    preserveAcrossGenerationAdvance?: boolean;
+    runAtMs?: number;
+    runId?: string;
+    sessionId?: string;
+    sessionKey?: string;
+  },
 ): CronActiveJobMarker | undefined {
   if (!jobId) {
     return undefined;
@@ -94,11 +112,56 @@ export function markCronJobActive(
     jobId,
     generation: state.generation,
     token,
+    ...(opts?.runAtMs !== undefined ? { runAtMs: opts.runAtMs } : {}),
+    ...(opts?.runId ? { runId: opts.runId } : {}),
+    ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
+    ...(opts?.sessionKey ? { sessionKey: opts.sessionKey } : {}),
     ...(opts?.preserveAcrossGenerationAdvance ? { preserveAcrossGenerationAdvance: true } : {}),
   };
   state.activeJobs.set(jobId, marker);
   state.activeJobIds?.add(jobId);
   return marker;
+}
+
+/** Adds resolved execution identity to the owning active-run marker. */
+export function updateCronJobActive(
+  marker: CronActiveJobMarker | undefined,
+  patch: {
+    sessionId?: string | undefined;
+    sessionKey?: string | undefined;
+  },
+): void {
+  if (!marker) {
+    return;
+  }
+  const state = getCronActiveJobState();
+  const activeMarker = state.activeJobs.get(marker.jobId);
+  if (
+    activeMarker?.token !== marker.token ||
+    !isMarkerActiveInGeneration(activeMarker, state.generation)
+  ) {
+    return;
+  }
+  if (patch.sessionId?.trim()) {
+    activeMarker.sessionId = patch.sessionId.trim();
+  }
+  if (patch.sessionKey?.trim()) {
+    activeMarker.sessionKey = patch.sessionKey.trim();
+  }
+}
+
+/** Returns content-free identity for every run still owned by this process. */
+export function listActiveCronRuns(): CronActiveRunSnapshot[] {
+  const state = getCronActiveJobState();
+  return [...state.activeJobs.values()]
+    .filter((marker) => isMarkerActiveInGeneration(marker, state.generation))
+    .map((marker) => ({
+      jobId: marker.jobId,
+      ...(marker.runAtMs !== undefined ? { runAtMs: marker.runAtMs } : {}),
+      ...(marker.runId ? { runId: marker.runId } : {}),
+      ...(marker.sessionId ? { sessionId: marker.sessionId } : {}),
+      ...(marker.sessionKey ? { sessionKey: marker.sessionKey } : {}),
+    }));
 }
 
 /** Clears the active marker when a cron run exits or is abandoned. */

@@ -1,3 +1,4 @@
+import type { CronActiveRunSnapshot } from "./active-jobs.js";
 /** Public cron service interface shared by callers and implementations. */
 import type { CronListPageOptions, CronListPageResult } from "./service/list-page-types.js";
 import type {
@@ -16,6 +17,12 @@ import type {
 } from "./service/state.js";
 import type { CronJob, CronPayload } from "./types.js";
 
+export type CronFinishedRunSnapshot = CronActiveRunSnapshot & {
+  durationMs?: number;
+  status?: "ok" | "error" | "skipped";
+  deliveryStatus?: "delivered" | "not-delivered" | "unknown" | "not-requested";
+};
+
 type CronWakeResult = { ok: true } | { ok: false; reason?: "unwakeable-session-key" };
 
 /** Result shape for direct/queued cron runs. */
@@ -32,6 +39,8 @@ export interface CronServiceContract {
   status(): Promise<CronStatusSummary>;
   list(opts?: { includeDisabled?: boolean }): Promise<CronListResult>;
   listPage(opts?: CronListPageOptions): Promise<CronListPageResult>;
+  listActiveRuns(): CronActiveRunSnapshot[];
+  listFinishedRuns(opts?: { limit?: number }): CronFinishedRunSnapshot[];
   add(input: CronAddInput, opts?: CronAddOptions): Promise<CronAddResult>;
   update(id: string, patch: CronUpdateInput): Promise<CronUpdateResult>;
   updateWithPrecondition(

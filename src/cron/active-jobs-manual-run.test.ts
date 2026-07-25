@@ -26,8 +26,10 @@ import {
   clearCronJobActive,
   isCronActiveJobMarkerCurrent,
   isCronJobActive,
+  listActiveCronRuns,
   markCronJobActive,
   resetCronActiveJobs,
+  updateCronJobActive,
 } from "./active-jobs.js";
 import { CronService } from "./service.js";
 import {
@@ -144,6 +146,28 @@ describe("cron activeJobIds — manual-run mark/clear", () => {
     clearCronJobActive("manual-token-reuse", freshMarker);
 
     expect(isCronJobActive("manual-token-reuse")).toBe(false);
+  });
+
+  it("exposes exact active-run identity and accepts owned session resolution", () => {
+    const marker = markCronJobActive("active-snapshot", {
+      runAtMs: 1_700_000_000_000,
+      runId: "cron:active-snapshot:1700000000000",
+    });
+
+    updateCronJobActive(marker, {
+      sessionId: "session-1",
+      sessionKey: "agent:main:cron:active-snapshot:run:session-1",
+    });
+
+    expect(listActiveCronRuns()).toEqual([
+      {
+        jobId: "active-snapshot",
+        runAtMs: 1_700_000_000_000,
+        runId: "cron:active-snapshot:1700000000000",
+        sessionId: "session-1",
+        sessionKey: "agent:main:cron:active-snapshot:run:session-1",
+      },
+    ]);
   });
 
   it("retires preserved main-session markers at the lifecycle cutoff", () => {

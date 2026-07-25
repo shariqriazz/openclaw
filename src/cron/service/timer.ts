@@ -27,6 +27,7 @@ import {
   isCronActiveJobMarkerCurrent,
   markCronJobActive,
   type CronActiveJobMarker,
+  updateCronJobActive,
 } from "../active-jobs.js";
 import { resolveCronDeliveryPlan, resolveFailureDestination } from "../delivery-plan.js";
 import { resolveCronExecutionRetryHint } from "../retry-hint.js";
@@ -35,6 +36,7 @@ import {
   normalizeCronRunDiagnostics,
   summarizeCronRunDiagnostics,
 } from "../run-diagnostics.js";
+import { createCronExecutionId } from "../run-id.js";
 import { computeNextRunAtMs } from "../schedule.js";
 import { sweepCronRunSessions } from "../session-reaper.js";
 import type {
@@ -113,6 +115,7 @@ type TimedCronRunOutcome = CronRunOutcome &
   CronRunTelemetry & {
     jobId: string;
     job: CronJob;
+    runId: string;
     taskRunId?: string;
     delivered?: boolean;
     deliveryAttempted?: boolean;
@@ -216,6 +219,15 @@ export async function executeJobCoreWithTimeout(
       }),
     };
   };
+  const recordExecutionIdentity = (execution?: CronAgentExecutionStarted) => {
+    if (!execution) {
+      return;
+    }
+    updateCronJobActive(opts?.activeJobMarker, {
+      sessionId: execution.sessionId,
+      sessionKey: execution.sessionKey,
+    });
+  };
   if (!isCronActiveJobMarkerCurrent(opts?.activeJobMarker)) {
     runAbortController.abort("Gateway restarting.");
     return createOperatorCancellationOutcome();
@@ -239,6 +251,7 @@ export async function executeJobCoreWithTimeout(
       const accumulateExecution = (info?: CronAgentExecutionStarted) => {
         if (info) {
           activeExecution = { ...activeExecution, ...info };
+          recordExecutionIdentity(info);
         }
       };
       const corePromise = executeJobCore(state, job, runAbortController.signal, {
@@ -287,6 +300,14 @@ export async function executeJobCoreWithTimeout(
       jobTimeoutMs,
       triggerTimeout,
     });
+    const noteRunnerStarted = (info?: CronAgentExecutionStarted) => {
+      recordExecutionIdentity(info);
+      watchdog.noteRunnerStarted(info);
+    };
+    const noteExecutionPhase = (info: CronAgentExecutionPhaseUpdate) => {
+      recordExecutionIdentity(info);
+      watchdog.notePhase(info);
+    };
     const noteLaneState = (info?: { waiting?: boolean }) => {
       if (info?.waiting === false) {
         watchdog.noteLaneAdmitted();
@@ -295,8 +316,8 @@ export async function executeJobCoreWithTimeout(
       watchdog.noteLaneWait();
     };
     const corePromise = executeJobCore(state, job, runAbortController.signal, {
-      onExecutionStarted: deferTimeoutUntilExecutionStart ? watchdog.noteRunnerStarted : undefined,
-      onExecutionPhase: deferTimeoutUntilExecutionStart ? watchdog.notePhase : undefined,
+      onExecutionStarted: deferTimeoutUntilExecutionStart ? noteRunnerStarted : undefined,
+      onExecutionPhase: deferTimeoutUntilExecutionStart ? noteExecutionPhase : undefined,
       onLaneWait: deferTimeoutUntilExecutionStart ? noteLaneState : undefined,
     });
     trackActiveCronTaskRunSettlement(corePromise);
@@ -1093,17 +1114,20 @@ export function applyTriggerNoFireResult(
   }
 }
 
-function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOutcome): void {
+function applyOutcomeToStoredJob(
+  state: CronServiceState,
+  result: TimedCronRunOutcome,
+): CronEvent[] {
   tryFinishCronTaskRun(state, result);
   const store = state.store;
   if (!store) {
-    return;
+    return [];
   }
   const jobs = store.jobs;
   const job = jobs.find((entry) => entry.id === result.jobId);
   if (!job) {
     if (result.status === "ok" && result.triggerEval?.fired === false) {
-      return;
+      return [];
     }
     if (result.status === "ok") {
       // A manual/queued run may finish after the job was removed. Preserve the
@@ -1117,18 +1141,18 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
         startedAt: result.startedAt,
         endedAt: result.endedAt,
       });
-      emitJobFinished(state, result.job, result, result.startedAt);
+      const finishedEvent = createJobFinishedEvent(result.job, result, result.startedAt);
       state.deps.log.info(
         { jobId: result.jobId },
         "cron: finalized successful run after job was removed during execution",
       );
-      return;
+      return [finishedEvent];
     }
     state.deps.log.warn(
       { jobId: result.jobId },
       "cron: applyOutcomeToStoredJob — job not found after forceReload, result discarded",
     );
-    return;
+    return [];
   }
 
   if (result.status === "ok" && result.triggerEval && !result.triggerEval.fired) {
@@ -1140,7 +1164,7 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
       triggerEval: result.triggerEval,
     });
     state.pendingCatchupDeferralJobIds.delete(job.id);
-    return;
+    return [];
   }
 
   const shouldDelete = applyJobResult(state, job, {
@@ -1155,12 +1179,13 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
   applyTriggerRunResult(job, result);
   state.pendingCatchupDeferralJobIds.delete(job.id);
 
-  emitJobFinished(state, job, result, result.startedAt);
+  const events: CronEvent[] = [createJobFinishedEvent(job, result, result.startedAt)];
 
   if (shouldDelete) {
     store.jobs = jobs.filter((entry) => entry.id !== job.id);
-    emit(state, { jobId: job.id, action: "removed", job });
+    events.push({ jobId: job.id, action: "removed", job: structuredClone(job) });
   }
+  return events;
 }
 
 function clearActiveMarkersForOutcomes(outcomes: readonly TimedCronRunOutcome[]): void {
@@ -1381,10 +1406,16 @@ async function runTimerTickBody(state: CronServiceState) {
     }): Promise<TimedCronRunOutcome> => {
       const { id, job } = params;
       const startedAt = state.deps.nowMs();
+      const runId = createCronExecutionId(job.id, startedAt);
       job.state.runningAtMs = startedAt;
       job.state.lastError = undefined;
       const activeJobMarker = markCronJobActive(job.id, {
         preserveAcrossGenerationAdvance: job.sessionTarget === "main",
+        runAtMs: startedAt,
+        runId,
+        ...(job.sessionTarget === "main"
+          ? { sessionKey: resolveMainSessionCronRunSessionKey(job, startedAt) }
+          : {}),
       });
       emit(state, { jobId: job.id, action: "started", job, runAtMs: startedAt });
       const jobTimeoutMs = resolveCronJobTimeoutMs(job);
@@ -1392,12 +1423,13 @@ async function runTimerTickBody(state: CronServiceState) {
 
       try {
         const result = await executeJobCoreWithTimeout(state, job, {
-          runId: taskRunId,
+          runId,
           activeJobMarker,
         });
         return {
           jobId: id,
           job,
+          runId,
           taskRunId,
           activeJobMarker,
           ...result,
@@ -1413,6 +1445,7 @@ async function runTimerTickBody(state: CronServiceState) {
         return {
           jobId: id,
           job,
+          runId,
           taskRunId,
           activeJobMarker,
           status: "error",
@@ -1434,6 +1467,7 @@ async function runTimerTickBody(state: CronServiceState) {
         return [];
       }
       let finalizedResults: TimedCronRunOutcome[] = [];
+      let finalizedEvents: CronEvent[] = [];
       let finalizationSucceeded = false;
       try {
         const currentResults = filterCurrentCronRunOutcomes(completedResults);
@@ -1446,7 +1480,7 @@ async function runTimerTickBody(state: CronServiceState) {
           finalizedResults = filterCurrentCronRunOutcomes(currentResults);
           finishRetiredCronTaskRuns(state, completedResults, finalizedResults);
           for (const result of finalizedResults) {
-            applyOutcomeToStoredJob(state, result);
+            finalizedEvents.push(...applyOutcomeToStoredJob(state, result));
           }
           if (finalizedResults.length === 0) {
             return;
@@ -1460,6 +1494,9 @@ async function runTimerTickBody(state: CronServiceState) {
           recomputeNextRunsForMaintenance(state);
           await persist(state);
         });
+        for (const event of finalizedEvents) {
+          emit(state, event);
+        }
         finalizationSucceeded = finalizedResults.length > 0;
         return finalizedResults;
       } finally {
@@ -1889,6 +1926,7 @@ async function runStartupCatchupCandidate(
   candidate: StartupCatchupCandidate,
 ): Promise<TimedCronRunOutcome> {
   const startedAt = state.deps.nowMs();
+  const runId = createCronExecutionId(candidate.job.id, startedAt);
   const taskRunId = tryCreateCronTaskRun({
     state,
     job: candidate.job,
@@ -1896,6 +1934,11 @@ async function runStartupCatchupCandidate(
   });
   const activeJobMarker = markCronJobActive(candidate.job.id, {
     preserveAcrossGenerationAdvance: candidate.job.sessionTarget === "main",
+    runAtMs: startedAt,
+    runId,
+    ...(candidate.job.sessionTarget === "main"
+      ? { sessionKey: resolveMainSessionCronRunSessionKey(candidate.job, startedAt) }
+      : {}),
   });
   emit(state, {
     jobId: candidate.job.id,
@@ -1905,12 +1948,13 @@ async function runStartupCatchupCandidate(
   });
   try {
     const result = await executeJobCoreWithTimeout(state, candidate.job, {
-      runId: taskRunId,
+      runId,
       activeJobMarker,
     });
     return {
       jobId: candidate.jobId,
       job: candidate.job,
+      runId,
       taskRunId,
       activeJobMarker,
       status: result.status,
@@ -1934,6 +1978,7 @@ async function runStartupCatchupCandidate(
     return {
       jobId: candidate.jobId,
       job: candidate.job,
+      runId,
       taskRunId,
       activeJobMarker,
       status: "error",
@@ -1956,6 +2001,7 @@ async function applyStartupCatchupOutcomes(
   try {
     const currentOutcomes = filterCurrentCronRunOutcomes(outcomes);
     let finalizedOutcomes: TimedCronRunOutcome[] = [];
+    let finalizedEvents: CronEvent[] = [];
     await locked(state, async () => {
       await ensureLoaded(state, {
         forceReload: state.stopped,
@@ -1986,7 +2032,7 @@ async function applyStartupCatchupOutcomes(
         outcomes,
       );
       for (const result of finalizedOutcomes) {
-        applyOutcomeToStoredJob(state, result);
+        finalizedEvents.push(...applyOutcomeToStoredJob(state, result));
       }
       if (finalizedOutcomes.length === 0 && plan.deferredJobs.length === 0) {
         if (releasedReservations) {
@@ -2024,6 +2070,9 @@ async function applyStartupCatchupOutcomes(
       recomputeNextRunsForMaintenance(state, { repairFutureCronNextRunAtMs: false });
       await persist(state);
     });
+    for (const event of finalizedEvents) {
+      emit(state, event);
+    }
     return finalizedOutcomes;
   } finally {
     clearActiveMarkersForOutcomes(outcomes);
@@ -2383,22 +2432,15 @@ async function executeDetachedCronJob(
   };
 }
 
-function emitJobFinished(
-  state: CronServiceState,
+function createJobFinishedEvent(
   job: CronJob,
-  result: {
-    status: CronRunStatus;
-    delivered?: boolean;
-    delivery?: CronDeliveryTrace;
-    triggerEval?: CronTriggerEvalOutcome;
-  } & CronRunOutcome &
-    CronRunTelemetry,
+  result: TimedCronRunOutcome,
   runAtMs: number,
-) {
-  emit(state, {
+): CronEvent {
+  return {
     jobId: job.id,
     action: "finished",
-    job,
+    job: structuredClone(job),
     status: result.status,
     error: result.error,
     summary: result.summary,
@@ -2410,6 +2452,7 @@ function emitJobFinished(
     delivery: result.delivery,
     sessionId: result.sessionId,
     sessionKey: result.sessionKey,
+    runId: result.runId,
     runAtMs,
     durationMs: job.state.lastDurationMs,
     nextRunAtMs: job.state.nextRunAtMs,
@@ -2417,7 +2460,7 @@ function emitJobFinished(
     model: result.model,
     provider: result.provider,
     usage: result.usage,
-  });
+  };
 }
 
 /** Clears the currently armed cron timer. */

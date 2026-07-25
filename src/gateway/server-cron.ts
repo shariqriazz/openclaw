@@ -711,7 +711,6 @@ export function buildGatewayCronService(params: {
         ]),
         ...(hookSummary !== undefined ? { summary: hookSummary } : {}),
       };
-      runCronChangedHook(hookEvt);
       // Re-arm / cancel on-exit watchers when the job set changes.
       if (evt.action === "added" || evt.action === "updated" || evt.action === "removed") {
         void reconcileExitWatchers();
@@ -755,13 +754,21 @@ export function buildGatewayCronService(params: {
             usage: evt.usage,
           },
           opts: { keepLines: runLogPrune.keepLines },
-        }).catch((err: unknown) => {
-          cronLogger.warn(
-            { err: String(err), storePath, jobId: evt.jobId },
-            "cron: run log append failed",
-          );
-        });
+        })
+          .then(() => {
+            // Finished hooks consume durable run identity. Never expose a
+            // completion to plugins before its run-log row is committed.
+            runCronChangedHook(hookEvt);
+          })
+          .catch((err: unknown) => {
+            cronLogger.warn(
+              { err: String(err), storePath, jobId: evt.jobId },
+              "cron: run log append failed",
+            );
+          });
+        return;
       }
+      runCronChangedHook(hookEvt);
     },
   });
 

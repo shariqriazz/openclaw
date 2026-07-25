@@ -1,3 +1,5 @@
+import { listActiveCronRuns } from "./active-jobs.js";
+import { readCronRunLogEntriesSync } from "./run-log.js";
 /** Stateful CronService facade around the locked service operation helpers. */
 import type {
   CronServiceContract,
@@ -47,6 +49,26 @@ export class CronService implements CronServiceContract {
 
   async listPage(opts?: CronListPageOptions) {
     return await ops.listPage(this.state, opts);
+  }
+
+  listActiveRuns() {
+    return listActiveCronRuns();
+  }
+
+  listFinishedRuns(opts?: { limit?: number }) {
+    return readCronRunLogEntriesSync({
+      storePath: this.state.deps.storePath,
+      limit: opts?.limit,
+    }).map((entry) => ({
+      jobId: entry.jobId,
+      ...(entry.runAtMs !== undefined ? { runAtMs: entry.runAtMs } : {}),
+      ...(entry.durationMs !== undefined ? { durationMs: entry.durationMs } : {}),
+      ...(entry.status ? { status: entry.status } : {}),
+      ...(entry.deliveryStatus ? { deliveryStatus: entry.deliveryStatus } : {}),
+      ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+      ...(entry.sessionKey ? { sessionKey: entry.sessionKey } : {}),
+      ...(entry.runId ? { runId: entry.runId } : {}),
+    }));
   }
 
   async add(input: CronJobCreate, opts?: CronAddOptions) {

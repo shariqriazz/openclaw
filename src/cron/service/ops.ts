@@ -53,6 +53,7 @@ import { locked } from "./locked.js";
 import { normalizeOptionalAgentId } from "./normalize.js";
 import type {
   CronAddOptions,
+  CronEvent,
   CronServiceState,
   CronUpdatePrecondition,
   CronWakeMode,
@@ -84,11 +85,15 @@ type InterruptedStartupRun = {
 function markManualCronJobActive(
   state: CronServiceState,
   job: CronJob,
+  runAtMs: number,
+  runId: string,
 ): CronActiveJobMarker | undefined {
   const jobId = job.id;
   state.activeManualRunJobIds.add(jobId);
   return markCronJobActive(jobId, {
     preserveAcrossGenerationAdvance: job.sessionTarget === "main",
+    runAtMs,
+    runId,
   });
 }
 
@@ -855,6 +860,7 @@ async function skipInvalidPersistedManualRun(params: {
   error: unknown;
 }) {
   const endedAt = params.state.deps.nowMs();
+  const runId = createCronExecutionId(params.job.id, endedAt);
   const errorText = normalizeCronRunErrorText(params.error);
   const diagnostics = createCronRunDiagnosticsFromError("cron-preflight", errorText, {
     severity: "warn",
@@ -873,27 +879,34 @@ async function skipInvalidPersistedManualRun(params: {
     { preserveSchedule: params.mode === "force" },
   );
 
-  emit(params.state, {
-    jobId: params.job.id,
-    action: "finished",
-    status: "skipped",
-    error: errorText,
-    diagnostics,
-    runAtMs: endedAt,
-    durationMs: params.job.state.lastDurationMs,
-    nextRunAtMs: params.job.state.nextRunAtMs,
-    deliveryStatus: params.job.state.lastDeliveryStatus,
-    deliveryError: params.job.state.lastDeliveryError,
-    failureNotificationDelivery: failureNotificationDeliveryFromJobState(params.job),
-  });
+  const events: CronEvent[] = [
+    {
+      jobId: params.job.id,
+      action: "finished",
+      job: structuredClone(params.job),
+      status: "skipped",
+      error: errorText,
+      diagnostics,
+      runAtMs: endedAt,
+      durationMs: params.job.state.lastDurationMs,
+      nextRunAtMs: params.job.state.nextRunAtMs,
+      deliveryStatus: params.job.state.lastDeliveryStatus,
+      deliveryError: params.job.state.lastDeliveryError,
+      failureNotificationDelivery: failureNotificationDeliveryFromJobState(params.job),
+      runId,
+    },
+  ];
 
   if (shouldDelete && params.state.store) {
     params.state.store.jobs = params.state.store.jobs.filter((entry) => entry.id !== params.job.id);
-    emit(params.state, { jobId: params.job.id, action: "removed" });
+    events.push({ jobId: params.job.id, action: "removed", job: structuredClone(params.job) });
   }
 
   recomputeNextRunsForMaintenance(params.state, { recomputeExpired: true });
   await persist(params.state);
+  for (const event of events) {
+    emit(params.state, event);
+  }
   armTimer(params.state);
 }
 
@@ -901,8 +914,8 @@ function tryCreateManualTaskRun(params: {
   state: CronServiceState;
   job: CronJob;
   startedAt: number;
+  runId: string;
 }): string | undefined {
-  const runId = createCronExecutionId(params.job.id, params.startedAt);
   try {
     const task = createRunningTaskRun({
       runtime: "cron",
@@ -911,7 +924,7 @@ function tryCreateManualTaskRun(params: {
       scopeKind: "system",
       childSessionKey: params.job.sessionKey,
       agentId: params.job.agentId,
-      runId,
+      runId: params.runId,
       label: params.job.name,
       task: params.job.name || params.job.id,
       deliveryStatus: "not_applicable",
@@ -927,7 +940,7 @@ function tryCreateManualTaskRun(params: {
       );
       return undefined;
     }
-    return runId;
+    return params.runId;
   } catch (error) {
     params.state.deps.log.warn(
       { jobId: params.job.id, error },
@@ -1078,12 +1091,14 @@ async function prepareManualRun(
       return { ok: true, ran: false, reason: "stopped" as const };
     }
     emit(state, { jobId: job.id, action: "started", job, runAtMs: preflight.now });
+    const runId = opts?.runId ?? createCronExecutionId(job.id, preflight.now);
     const taskRunId = tryCreateManualTaskRun({
       state,
       job,
       startedAt: preflight.now,
+      runId,
     });
-    const activeJobMarker = markManualCronJobActive(state, job);
+    const activeJobMarker = markManualCronJobActive(state, job, preflight.now, runId);
     // Execute against a snapshot so later reload/merge can preserve delivery
     // target writeback from disk without mutating the running object.
     const executionJob = structuredClone(job);
@@ -1099,7 +1114,7 @@ async function prepareManualRun(
       ok: true,
       ran: true,
       jobId: job.id,
-      runId: opts?.runId ?? taskRunId,
+      runId,
       taskRunId,
       activeJobMarker,
       startedAt: preflight.now,
@@ -1140,6 +1155,7 @@ async function finishPreparedManualRun(
     }
 
     let finalized = false;
+    let finalizedEvents: CronEvent[] = [];
     let notifySetupTimeout = coreResult.isolatedAgentSetupTimeout !== undefined;
     await locked(state, async () => {
       await ensureLoaded(state, { skipRecompute: true });
@@ -1182,10 +1198,10 @@ async function finishPreparedManualRun(
           triggerEval: coreResult.triggerEval,
         });
 
-        emit(state, {
+        finalizedEvents.push({
           jobId: job.id,
           action: "finished",
-          job,
+          job: structuredClone(job),
           status: coreResult.status,
           error: coreResult.error,
           summary: coreResult.summary,
@@ -1210,7 +1226,11 @@ async function finishPreparedManualRun(
 
       if (shouldDelete && state.store) {
         state.store.jobs = state.store.jobs.filter((entry) => entry.id !== job.id);
-        emit(state, { jobId: job.id, action: "removed", job });
+        finalizedEvents.push({
+          jobId: job.id,
+          action: "removed",
+          job: structuredClone(job),
+        });
       }
 
       // Manual runs should not advance other due jobs without executing them.
@@ -1241,6 +1261,11 @@ async function finishPreparedManualRun(
       await persist(state);
       finalized = true;
     });
+    if (finalized) {
+      for (const event of finalizedEvents) {
+        emit(state, event);
+      }
+    }
     if (notifySetupTimeout && isCronActiveJobMarkerCurrent(prepared.activeJobMarker)) {
       maybeNotifyManualIsolatedSetupTimeout(state, {
         jobId,
