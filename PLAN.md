@@ -1,6 +1,6 @@
 # Gateway Reliability and Persistence Performance Plan
 
-- Status: correctness Batches 1-3 and performance Phases 0-1 implemented and
+- Status: correctness Batches 1-4 and performance Phases 0-1 implemented and
   validated; performance Phase 2 deferred pending consumer, migration, and
   rollback proof
 - Target branch: `shariq`
@@ -24,7 +24,11 @@ commits, validation gates, deployment steps, and rollback points:
    benchmark reproduces the result.
 6. Move session metadata to per-agent SQLite only if post-worker measurements,
    the consumer audit, and migration rehearsal still support it.
-7. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
+7. Use OpenAI Responses server compaction for compatible OpenAI models while
+   retaining the readable local summary as a portability and failure fallback.
+8. Keep GPT-5.6's physical provider envelope separate from the operating prompt
+   budget: 1.05M physical, 372K input, and 128K output.
+9. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
    patch histories, protected behavior, validation commands, and deployment
    lessons before final handoff.
 
@@ -233,6 +237,55 @@ Required design:
 - Never reinterpret unavailable `host=sandbox` as Gateway execution.
 - Preserve direct/internal API compatibility for callers that bypass the
   model-facing schema; explicit unavailable requests still fail safely.
+
+### Batch 4: OpenAI server compaction and context envelope
+
+OpenClaw's native compactor previously produced only a local text summary.
+Lossless Claw also compacted its retrieval graph locally, so compatible OpenAI
+turns did not receive the higher-fidelity opaque continuation artifact available
+through Responses compaction.
+
+Required design:
+
+- Use the normal OpenAI Responses endpoint with a trailing
+  `compaction_trigger`; do not patch installed dependencies or add another
+  provider identity.
+- Keep native Pi/OpenClaw transport and existing WebSocket/SSE selection
+  unchanged. Server compaction is a compaction concern, not a new harness.
+- Run the existing readable local summary in parallel. It remains the fallback
+  for endpoint failure, model/provider switching, inspection, and export.
+- Persist the opaque replacement history in the native compaction entry and
+  replay it only for the exact provider/API/model identity that created it.
+- Build first compaction from the complete active branch. Build repeated
+  compaction from the previous opaque artifact plus subsequent compatible
+  turns, never from the lossy portable summary.
+- Treat only the newest compaction boundary as authoritative. Never revive an
+  older artifact across a newer compaction produced by another model.
+- Preserve pending user intent across resume, deterministic message order, and
+  completed tool results. Drop a completed trailing turn when its assistant
+  belongs to another model.
+- Preserve the ChatGPT `store:false` safeguards: do not replay stale encrypted
+  reasoning or prior Responses item IDs.
+- After stateful LCM compaction, run the direct native compactor so manual,
+  timeout, and overflow recovery all obtain the provider artifact. Skip the
+  second pass when stateless LCM delegation already returned one.
+- Provider-compaction failure must not invalidate successful LCM or local
+  compaction. Log the fallback and continue with the readable summary.
+- Keep `contextWindow=1_050_000`, `contextTokens=372_000`, and
+  `maxTokens=128_000` for the canonical Sol, Terra, and Luna model entries.
+  OpenClaw reserve behavior and LCM policy remain based on 372K:
+  272K host boundary and approximately 260.4K LCM threshold.
+- Keep production LCM source and build in the clean
+  `/root/projects/lossless-claw` `shariq` checkout. The loaded plugin must
+  resolve to that checkout, not a dirty extension copy.
+- Disable eager Codex discovery for this Pi/OpenClaw deployment while retaining
+  explicit Codex-harness use. Do not create per-agent Codex homes unless that
+  harness is actually selected.
+
+Focused proof must cover endpoint/body/header construction, repeated opaque
+compaction, resume with pending input, exact-model isolation, newest-boundary
+selection, stale-reasoning suppression, native compaction after stateful LCM
+manual and overflow paths, and unchanged local fallback behavior.
 
 ### Rebase-skill maintenance
 
@@ -754,8 +807,9 @@ deprecation window before removing them.
 ## Correctness Implementation Batches
 
 Each batch is a separate commit and rollback point. Batch 1 must pass before
-Batch 2, and Batch 2 before Batch 3. Do not combine these fixes with trajectory
-or session-storage changes.
+Batch 2, Batch 2 before Batch 3, and Batch 4 remains isolated from those
+ownership fixes. Do not combine these fixes with trajectory or session-storage
+changes.
 
 ### Batch 1 implementation surface
 
@@ -860,6 +914,36 @@ Exit criteria:
 - schema caching or config reload cannot retain capabilities beyond its owning
   lifecycle.
 
+### Batch 4 implementation surface
+
+Expected OpenClaw surfaces:
+
+- `src/agents/openai-server-compaction.ts`
+- `src/agents/agent-hooks/openai-server-compaction.ts`
+- `src/agents/agent-hooks/compaction-safeguard.ts`
+- `src/agents/embedded-agent-runner/compact.queued.ts`
+- `src/agents/embedded-agent-runner/run.ts`
+- `src/agents/embedded-agent-runner/extensions.ts`
+- `packages/ai/src/internal/openai.ts`
+- `extensions/openai/openai-chatgpt-provider.ts`
+- focused provider, compaction, extension, timeout, and overflow tests
+
+Exit criteria:
+
+- compatible native Pi/OpenClaw compaction stores exactly one opaque artifact;
+- endpoint failure retains successful local or LCM compaction;
+- repeated compaction uses prior opaque state plus compatible trailing turns;
+- resume preserves pending user intent without replaying another model's turn;
+- model switches and newer compaction boundaries cannot reuse stale artifacts;
+- ChatGPT requests retain `store:false` reasoning/item-id replay protections;
+- stateful LCM manual, timeout, and overflow paths run direct provider
+  compaction after engine compaction;
+- stateless native delegation does not run a duplicate provider pass;
+- canonical GPT-5.6 model entries expose 1.05M physical capacity while all host
+  and LCM operating thresholds remain based on 372K;
+- production config validates, canonical LCM source/build parity passes, and
+  eager Codex discovery remains disabled without disabling explicit Codex use.
+
 ### Global rebase-skill closeout
 
 Expected global surfaces:
@@ -884,7 +968,7 @@ Exit criteria:
 
 ## Performance Implementation Phases
 
-The performance phases begin only after Batches 1-3 have landed and passed
+The performance phases begin only after Batches 1-4 have landed and passed
 their own regression proof.
 
 ### Phase 0: Convert proof into repository-owned regression coverage
@@ -1101,6 +1185,30 @@ Exit criteria:
 - Session-level overrides produce the correct capability snapshot.
 - Capability loss after schema creation is rejected at execution.
 - Explicit disallowed or unavailable requests fail without host substitution.
+
+### OpenAI server compaction
+
+- ChatGPT OAuth and direct OpenAI Responses requests use the normal endpoint
+  with a trailing `compaction_trigger` and exactly one returned artifact.
+- Request headers, account scope, tool schemas, instructions, reasoning shape,
+  cancellation, and `store:false` match the active provider contract.
+- The portable summary remains available when the remote endpoint fails.
+- Repeated compaction consumes prior opaque history rather than the portable
+  summary.
+- Resume appends compatible completed turns and pending user intent exactly
+  once.
+- Another model's completed turn and a newer mismatched compaction boundary
+  invalidate opaque replay.
+- Stale encrypted reasoning and Responses item IDs remain absent on the
+  ChatGPT transport.
+- Manual `/compact`, timeout recovery, and overflow recovery invoke direct
+  provider compaction after stateful LCM compaction.
+- Stateless LCM delegation that already produced an artifact is not compacted
+  twice.
+- Native non-OpenAI compaction, Codex harness compaction, and third-party
+  context engines retain their existing behavior.
+- Sol, Terra, and Luna resolve to 1.05M physical, 372K operating, and 128K
+  output budgets without alternate model aliases.
 
 ### Trajectory worker
 
