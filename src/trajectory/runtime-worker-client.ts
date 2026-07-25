@@ -4,8 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 
 const MAX_QUEUED_TRAJECTORY_BYTES = 64 * 1024 * 1024;
-const TRAJECTORY_WORKER_OLD_GENERATION_MIB = 128;
-const TRAJECTORY_WORKER_YOUNG_GENERATION_MIB = 16;
+const TRAJECTORY_WORKER_OLD_GENERATION_MIB = 32;
+const TRAJECTORY_WORKER_YOUNG_GENERATION_MIB = 8;
 
 type TrajectoryWorkerJob = {
   id: number;
