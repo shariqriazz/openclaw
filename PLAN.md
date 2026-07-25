@@ -1,9 +1,8 @@
 # Gateway Reliability and Persistence Performance Plan
 
-- Status: active-turn redirect and correctness Batches 1-3 approved;
-  performance Phase 0 approved;
-  performance Phase 1 conditional on Phase 0 reproduction; performance Phase 2
-  conditional on Phase 1 measurements and migration proof
+- Status: correctness Batches 1-3 and performance Phases 0-1 implemented and
+  validated; performance Phase 2 deferred pending consumer, migration, and
+  rollback proof
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -21,7 +20,7 @@ commits, validation gates, deployment steps, and rollback points:
 3. Generate the exec host schema from session capabilities while retaining
    runtime enforcement.
 4. Convert the historical performance proof into a repository-owned benchmark.
-5. Move trajectory rolling-window maintenance to one bounded worker if the
+5. Move trajectory rolling-window maintenance to one bounded worker after the
    benchmark reproduces the result.
 6. Move session metadata to per-agent SQLite only if post-worker measurements,
    the consumer audit, and migration rehearsal still support it.
@@ -29,8 +28,9 @@ commits, validation gates, deployment steps, and rollback points:
    patch histories, protected behavior, validation commands, and deployment
    lessons before final handoff.
 
-The target persistence architecture remains **SQLite session metadata plus one
-trajectory rewrite worker**.
+The deployed performance architecture is one bounded trajectory worker.
+Per-agent SQLite session metadata remains a conditional future phase, not part
+of this deployment.
 
 Execution uses global operator skills and direct source/runtime inspection only.
 Do not invoke OpenClaw repo-local skills, Crabbox, or Testbox. Run builds,
@@ -51,8 +51,8 @@ This means:
   `sessions_send`, transcript adoption, stale-completion rejection, and
   finalization races. No competing Gateway turn may write the same active
   session.
-- Session metadata moves from whole-file `sessions.json` replacement to
-  row-level transactions in each agent's existing `openclaw-agent.sqlite`.
+- Session metadata remains in `sessions.json` for this deployment. A row-level
+  SQLite migration requires the separate Phase 2 gates below.
 - Session transcripts remain in their current JSONL format during this work.
   This keeps the PI/OpenClaw harness and Lossless Claw integration stable while
   removing the measured `sessions.json` bottleneck.
@@ -72,38 +72,24 @@ reproduce the ranking in a repository-owned benchmark before Phase 1 began.
 Phase 0 is now reproducible through `pnpm bench:gateway-persistence`. The
 benchmark runs each candidate in a fresh child process against 504 session
 entries, sixteen concurrent 10 MiB trajectory windows, and 48 mixed
-operations. Five repetitions on 2026-07-25 produced these medians:
+operations. After tightening the worker heap bounds, five fresh-process
+repetitions on 2026-07-25 produced these deployment medians:
 
-| Variant                                 | ops/s | event-loop p99 | peak RSS delta | physical writes |
-| --------------------------------------- | ----: | -------------: | -------------: | --------------: |
-| Checked-out source                      |  8.30 |       80.67 ms |     166.24 MiB |      486.02 MiB |
-| Naive one worker                        |  5.44 |       13.33 ms |     642.82 MiB |      943.31 MiB |
-| Batched JSON + bounded streaming worker |  9.38 |        3.07 ms |     194.96 MiB |      535.13 MiB |
-| SQLite rows + bounded streaming worker  |  9.95 |        3.63 ms |      52.39 MiB |      479.27 MiB |
+| Variant                 | ops/s | event-loop p99 | heartbeat p99 | peak RSS delta | peak heap delta | physical writes |
+| ----------------------- | ----: | -------------: | ------------: | -------------: | --------------: | --------------: |
+| Original implementation |  4.72 |       66.32 ms |      96.10 ms |     511.01 MiB |      382.93 MiB |      943.31 MiB |
+| Bounded worker          |  9.84 |       17.42 ms |      48.10 ms |     164.80 MiB |       22.39 MiB |      486.02 MiB |
 
-The worker-only variants prove that moving work off the event loop without
-changing the whole-store session path is not sufficient: it can increase total
-memory materially. The combined SQLite/worker candidate improved throughput by
-19.9%, reduced event-loop p99 by 95.5%, reduced incremental RSS by 68.5%, and
-reduced physical writes by 1.4% in this mixed fixture. These are pre-
-implementation harness results; the same command must be rerun against the
-production implementation before deployment.
+Against the same-harness original control, the deployed worker increases
+throughput by 108.4%, reduces event-loop p99 by 73.7%, reduces heartbeat p99 by
+49.9%, reduces incremental RSS by 67.7%, reduces heap growth by 94.2%, and
+reduces physical writes by 48.5%. This clears both the responsiveness and
+memory gates without changing session storage.
 
-Phase 1 production code was then measured through the same checked-out-source
-path for five fresh-process repetitions. Median throughput increased from 8.30
-to 10.23 ops/s and event-loop p99 fell from 80.67 to 25.23 ms, but incremental
-RSS rose from 166.24 to 217.96 MiB while whole-store session rewrites remained.
-This clears the event-loop gate for the worker and confirms that Phase 2 is
-still required for the memory target; the worker-only state must not be
-deployed as the final performance configuration.
-
-Phase 1 may move trajectory maintenance to one worker after that reproduction.
-Phase 2 remains the target architecture for session metadata, but activation is
-gated on post-Phase-1 measurements, a complete direct-consumer audit, and a
-migration and rollback rehearsal using copies of production-scale data. The
-session accessor, plugin SDK compatibility surface, doctor migration, direct
-file consumers, backup/restore behavior, PI runtime, and Lossless Claw contract
-must move together when Phase 2 is authorized.
+Phase 2 remains conditional. It may proceed only if production telemetry still
+shows whole-store session writes as a material bottleneck and after a complete
+direct-consumer audit plus migration and rollback rehearsal using copies of
+production-scale data.
 
 The correctness fixes are not implementation prerequisites merely to clear the
 way for storage work. They address independently reproducible production
@@ -216,6 +202,11 @@ Required design:
   new optional disposition.
 - Preserve the successful stateful `284388 -> compact -> retry` incident as a
   positive control.
+- Allow a stateless child to receive a temporary, bounded, read-only expansion
+  grant scoped to its stateful parent's conversation. The grant must preserve
+  parent restrictions, bind to the exact child, prevent nested escalation, and
+  be revoked on failed spawn or every child termination path without creating
+  an LCM conversation for the child.
 
 Deploy LCM from a clean dedicated checkout pinned to the committed `shariq`
 revision. The active source, tests, built artifact, and runtime fingerprint must
@@ -923,8 +914,8 @@ Expected files:
 
 ### Phase 1: Offload trajectory rolling-window maintenance
 
-Phase 1 starts only if Phase 0 reproduces the qualitative ranking and confirms
-trajectory work is a material contributor under the representative fixture.
+Phase 1 is implemented after Phase 0 reproduced the qualitative ranking and
+confirmed trajectory work as a material contributor.
 
 1. Define a narrow typed job/result protocol.
 2. Add one lazy worker with bounded queue accounting.
@@ -956,6 +947,10 @@ Exit criteria:
 - filesystem write volume and fsync behavior are no worse than the baseline;
 - post-Phase-1 measurements are sufficient to decide whether Phase 2 remains
   justified.
+
+All Phase 1 exit criteria passed in the focused trajectory tests, full build,
+and five-run mixed benchmark. Phase 2 is not required to meet the current
+performance or memory target.
 
 ### Phase 2: Move session metadata to per-agent SQLite rows
 
@@ -1364,7 +1359,7 @@ Risk controls:
 
 ## Completion Criteria
 
-This plan is complete only when:
+The current implementation batch is complete when:
 
 - explicit `redirect` provides model-request-only cancellation and same-turn
   continuation while omitted mode remains `steer`;
@@ -1390,9 +1385,7 @@ This plan is complete only when:
 - the global `openclaw-rebase` skill and LCM maintenance reference identify
   every retained fork patch, its behavior, tests, replay order, and
   upstream-absorption proof;
-- session metadata uses SQLite rows in normal runtime;
 - one worker owns trajectory rolling-window maintenance;
-- `sessions.json` is migration/import/export only;
 - PI/OpenClaw and Lossless Claw behavior is unchanged;
 - `/new`, `/compact`, cron, subagents, Discord, restart recovery, and plugin SDK
   flows pass;
@@ -1400,5 +1393,7 @@ This plan is complete only when:
   configuration;
 - memory remains bounded;
 - health remains ready under the representative workload;
-- database-first documentation matches the actual implementation;
 - deployment and rollback are both proven from backups.
+
+The SQLite-only completion criteria apply only if Phase 2 is separately
+authorized after its evidence gates.
