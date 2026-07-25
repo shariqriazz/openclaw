@@ -447,6 +447,7 @@ import {
   acquireEmbeddedAttemptCleanupSessionLock,
   buildEmbeddedSubscriptionParams,
   cleanupEmbeddedAttemptResources,
+  runOwnedPromptUntilSettled,
 } from "./attempt.subscription-cleanup.js";
 import {
   appendAttemptCacheTtlIfNeeded,
@@ -3615,9 +3616,13 @@ export async function runEmbeddedAttempt(
         prompt: string,
         options?: Parameters<typeof activeSession.prompt>[1],
       ): Promise<void> =>
-        withOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, async () =>
-          abortable(trackPromptSettlePromise(activeSession.prompt(prompt, options))),
-        );
+        runOwnedPromptUntilSettled({
+          withOwnership: (run) =>
+            withOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, run),
+          runPrompt: () => activeSession.prompt(prompt, options),
+          trackSettlement: trackPromptSettlePromise,
+          abortable,
+        });
       // Hook runner was already obtained earlier before tool creation.
       const hookAgentId = sessionAgentId;
       let beforeAgentFinalizeRevisionReason: string | undefined;

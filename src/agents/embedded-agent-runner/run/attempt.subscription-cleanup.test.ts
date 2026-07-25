@@ -5,6 +5,7 @@ import {
   acquireEmbeddedAttemptCleanupSessionLock,
   EMBEDDED_ABORT_SETTLE_TIMEOUT_MS,
   cleanupEmbeddedAttemptResources,
+  runOwnedPromptUntilSettled,
 } from "./attempt.subscription-cleanup.js";
 
 function createDeferred<T>() {
@@ -83,6 +84,39 @@ describe("embedded attempt subscription cleanup", () => {
     });
 
     expect(acquire).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps transcript ownership active after the caller-facing abort rejects", async () => {
+    const prompt = createDeferred<void>();
+    const callerAbort = createDeferred<never>();
+    let ownershipActive = false;
+    const tracked: Promise<void>[] = [];
+
+    const result = runOwnedPromptUntilSettled({
+      withOwnership: async (run) => {
+        ownershipActive = true;
+        try {
+          return await run();
+        } finally {
+          ownershipActive = false;
+        }
+      },
+      runPrompt: () => prompt.promise,
+      trackSettlement: (promise) => {
+        tracked.push(promise);
+        return promise;
+      },
+      abortable: (promise) => Promise.race([promise, callerAbort.promise]),
+    });
+
+    callerAbort.reject(new Error("idle timeout"));
+    await expect(result).rejects.toThrow("idle timeout");
+    expect(ownershipActive).toBe(true);
+    expect(tracked).toHaveLength(1);
+
+    prompt.resolve();
+    await expect(tracked[0]).resolves.toBeUndefined();
+    expect(ownershipActive).toBe(false);
   });
 
   it("releases the lock before runtime teardown can hang", async () => {

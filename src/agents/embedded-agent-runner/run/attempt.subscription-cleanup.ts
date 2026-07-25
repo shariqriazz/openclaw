@@ -72,6 +72,20 @@ export async function acquireEmbeddedAttemptCleanupSessionLock<
 }
 
 /**
+ * Keeps transcript ownership alive until the underlying prompt settles, even
+ * when the caller-facing abort wrapper rejects first on timeout or cancellation.
+ */
+export function runOwnedPromptUntilSettled<T>(params: {
+  withOwnership: (run: () => Promise<T>) => Promise<T>;
+  runPrompt: () => Promise<T>;
+  trackSettlement: (promise: Promise<T>) => Promise<T>;
+  abortable: (promise: Promise<T>) => Promise<T>;
+}): Promise<T> {
+  const ownedPrompt = params.withOwnership(params.runPrompt);
+  return params.abortable(params.trackSettlement(ownedPrompt));
+}
+
+/**
  * Identity helper that preserves the concrete subscription params type at call
  * sites. Keeping this as a named helper lets tests assert the exact shape passed
  * into the subscription layer without widening the object inline.
