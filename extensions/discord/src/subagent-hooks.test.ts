@@ -88,6 +88,13 @@ function registerHandlersForTest(
   return registerHookHandlersForTest<OpenClawPluginApi>({
     config,
     register: (api) => {
+      Object.assign(api, {
+        agent: {
+          events: {
+            registerAgentEventSubscription() {},
+          },
+        },
+      });
       registerDiscordSubagentHooks(api);
       api.on("subagent_spawning", (event) => handleDiscordSubagentSpawning(api, event));
     },
