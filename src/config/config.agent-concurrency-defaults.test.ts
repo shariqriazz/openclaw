@@ -48,6 +48,19 @@ describe("agent concurrency defaults", () => {
     expect(parsed.agents?.defaults?.subagents?.maxChildrenPerAgent).toBe(7);
   });
 
+  it("caps per-agent active children at 50", () => {
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: { defaults: { subagents: { maxChildrenPerAgent: 50 } } },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: { defaults: { subagents: { maxChildrenPerAgent: 51 } } },
+      }),
+    ).toThrow();
+  });
+
   it("injects missing agent defaults", () => {
     const cfg = applyAgentDefaults({});
 

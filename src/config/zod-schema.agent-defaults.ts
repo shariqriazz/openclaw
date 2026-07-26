@@ -256,7 +256,7 @@ export const AgentDefaultsSchema = z
           .number()
           .int()
           .min(1)
-          .max(20)
+          .max(50)
           .optional()
           .describe(
             "Maximum number of active children a single agent session can spawn (default: 5).",
