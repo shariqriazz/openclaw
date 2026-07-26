@@ -1,9 +1,8 @@
 # Gateway Reliability and Persistence Performance Plan
 
-- Status: correctness Batches 1-4 and performance Phases 0-1 implemented and
-  validated; Batch 5 plans the native LCM lifecycle migration;
-  post-deployment evidence reopens bounded LCM-memory work and the gated
-  Phase 2 session-store investigation
+- Status: correctness Batches 1-5 and performance Phases 0-1.5 implemented,
+  validated, and locally deployed; post-deployment evidence keeps the gated
+  Phase 2 session-store investigation open
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -152,6 +151,11 @@ candidate cost, not yet a proven bottleneck.
 Phase 2 remains gated. Runtime telemetry must attribute stall time and
 allocation volume to session-store replacement, LCM assembly stages, or other
 run work before activating a storage migration.
+
+The bounded LCM diagnostic change is now implemented in LCM commit `114bac7`.
+It replaces retained full serialized prompt snapshots with SHA-256 digests
+without changing assembly output. Its full 1,848-test suite, typecheck, and all
+three builds passed before deployment.
 
 The correctness fixes are not implementation prerequisites merely to clear the
 way for storage work. They address independently reproducible production
@@ -431,6 +435,31 @@ selection, stale-reasoning suppression, native compaction after stateful LCM
 manual and overflow paths, and unchanged local fallback behavior.
 
 ### Batch 5: Native LCM cron lifecycle and maintenance
+
+Implementation status: completed and live-verified on 2026-07-26.
+
+- OpenClaw `e0852954479` emits durable exact run lifecycle identity.
+- OpenClaw `ed6ca069f0a` separates stable context identity from the current
+  session id adopted after compaction or session reconciliation.
+- LCM `d6627c9` owns exact completion archival, receipts, restart replay, and
+  cron-only stale recovery.
+- LCM `4d7022b` adds dry-run-first guarded native maintenance.
+- LCM `b9eef23` preserves lifecycle receipts during rollover repair.
+- The completion watcher, janitor service/timer, and weekly timer are disabled;
+  their scripts and units remain intact for rollback.
+
+The first live canary correctly failed closed because OpenClaw emitted an
+adopted session id while the exact run-scoped key and LCM conversation retained
+the original context id. No conversation or receipt was changed. The follow-up
+patch introduced a distinct internal context identity, kept adopted-session
+behavior unchanged, and made finished hooks plus durable run logs use the exact
+LCM identity.
+
+The corrected isolated no-delivery canary completed successfully, archived
+exactly its run-scoped conversation with `cron-completed`, and wrote one
+idempotency receipt. Production `lcm maintain` then completed in dry-run mode,
+reported the frozen 14-day cutoff and 312 eligible inactive cron
+conversations, and performed no maintenance mutation.
 
 The current LCM lifecycle is correct in intent but split across external
 polling scripts that read private OpenClaw and LCM SQLite tables:
