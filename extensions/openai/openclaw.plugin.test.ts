@@ -38,6 +38,7 @@ const manifest = JSON.parse(
         baseUrlHosts?: string[];
         providerConfigApiIn?: string[];
       };
+      reason?: string;
     }>;
   };
   providerEndpoints?: Array<{
