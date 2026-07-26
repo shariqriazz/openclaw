@@ -51,9 +51,11 @@ type DiscordSubagentEndedEvent = {
 type DiscordSubagentDeliveryTargetEvent = {
   expectsCompletionMessage?: boolean;
   childSessionKey: string;
+  spawnMode?: "run" | "session";
   requesterOrigin?: {
     channel?: string;
     accountId?: string;
+    to?: string;
     threadId?: string | number;
   };
 };
@@ -191,10 +193,23 @@ export function handleDiscordSubagentDeliveryTarget(
     return undefined;
   }
   const requesterAccountId = event.requesterOrigin?.accountId?.trim();
+  const requesterTo = event.requesterOrigin?.to?.trim();
   const requesterThreadId =
     event.requesterOrigin?.threadId != null && event.requesterOrigin.threadId !== ""
       ? (normalizeOptionalStringifiedId(event.requesterOrigin.threadId) ?? "")
       : "";
+  if (event.spawnMode === "run" && requesterTo) {
+    // One-shot child output is presented in its bound thread by the Discord
+    // stream relay; the completion turn must resume on the requester's route.
+    return {
+      origin: {
+        channel: "discord",
+        ...(requesterAccountId ? { accountId: requesterAccountId } : {}),
+        to: requesterTo,
+        ...(requesterThreadId ? { threadId: requesterThreadId } : {}),
+      },
+    };
+  }
   const bindings = listThreadBindingsBySessionKey({
     targetSessionKey: event.childSessionKey,
     ...(requesterAccountId ? { accountId: requesterAccountId } : {}),

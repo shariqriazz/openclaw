@@ -101,12 +101,15 @@ function registerHandlersForTest(
   });
 }
 
-async function resolveSubagentDeliveryTargetForTest(requesterOrigin: {
-  channel: string;
-  accountId: string;
-  to: string;
-  threadId?: string;
-}) {
+async function resolveSubagentDeliveryTargetForTest(
+  requesterOrigin: {
+    channel: string;
+    accountId: string;
+    to: string;
+    threadId?: string;
+  },
+  spawnMode: "run" | "session" = "session",
+) {
   const handlers = registerHandlersForTest();
   const handler = getRequiredHookHandler(handlers, "subagent_delivery_target");
   return await handler(
@@ -115,7 +118,7 @@ async function resolveSubagentDeliveryTargetForTest(requesterOrigin: {
       requesterSessionKey: "agent:main:main",
       requesterOrigin,
       childRunId: "run-1",
-      spawnMode: "session",
+      spawnMode,
       expectsCompletionMessage: true,
     },
     {},
@@ -457,6 +460,26 @@ describe("discord subagent hook handlers", () => {
         accountId: "work",
         to: "channel:777",
         threadId: "777",
+      },
+    });
+  });
+
+  it("routes one-shot completion control back to the requester", async () => {
+    const result = await resolveSubagentDeliveryTargetForTest(
+      {
+        channel: "discord",
+        accountId: "work",
+        to: "channel:123",
+      },
+      "run",
+    );
+
+    expect(hookMocks.listThreadBindingsBySessionKey).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      origin: {
+        channel: "discord",
+        accountId: "work",
+        to: "channel:123",
       },
     });
   });

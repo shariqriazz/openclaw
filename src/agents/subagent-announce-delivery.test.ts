@@ -6,6 +6,11 @@ import {
   testing as sessionBindingServiceTesting,
   registerSessionBindingAdapter,
 } from "../infra/outbound/session-binding-service.js";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../plugins/hooks.test-helpers.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import type {
@@ -28,6 +33,7 @@ import { resolveAnnounceOrigin } from "./subagent-announce-origin.js";
 
 afterEach(() => {
   sessionBindingServiceTesting.resetSessionBindingAdaptersForTests();
+  resetGlobalHookRunner();
   setActivePluginRegistry(createTestRegistry());
   testing.setDepsForTest();
 });
@@ -649,6 +655,63 @@ describe("resolveSubagentCompletionOrigin", () => {
       channel: "telegram",
       accountId: "bot-1",
       to: "telegram:direct:123",
+    });
+  });
+
+  it("honors the channel completion route before a child binding fallback", async () => {
+    const registry = createMockPluginRegistry([
+      {
+        hookName: "subagent_delivery_target",
+        handler: () => ({
+          origin: {
+            channel: "discord",
+            accountId: "bot-1",
+            to: "channel:parent",
+          },
+        }),
+      },
+    ]);
+    setActivePluginRegistry(registry);
+    initializeGlobalHookRunner(registry);
+    registerSessionBindingAdapter({
+      channel: "discord",
+      accountId: "bot-1",
+      listBySession: (targetSessionKey: string) =>
+        targetSessionKey === "agent:main:subagent:child"
+          ? [
+              {
+                bindingId: "discord:bot-1:child-thread",
+                targetSessionKey,
+                targetKind: "subagent",
+                conversation: {
+                  channel: "discord",
+                  accountId: "bot-1",
+                  conversationId: "child-thread",
+                },
+                status: "active",
+                boundAt: 1,
+              },
+            ]
+          : [],
+      resolveByConversation: () => null,
+    });
+
+    const origin = await resolveSubagentCompletionOrigin({
+      childSessionKey: "agent:main:subagent:child",
+      requesterSessionKey: "agent:main:main",
+      requesterOrigin: {
+        channel: "discord",
+        accountId: "bot-1",
+        to: "channel:parent",
+      },
+      spawnMode: "run",
+      expectsCompletionMessage: true,
+    });
+
+    expect(origin).toEqual({
+      channel: "discord",
+      accountId: "bot-1",
+      to: "channel:parent",
     });
   });
 });
