@@ -81,7 +81,11 @@ Approved `openclaw.json` changes:
 - remove duplicate fallback entries that point to the primary model;
 - raise `agents.defaults.subagents.maxChildrenPerAgent` from 20 to 30 while
   retaining the process-wide `agents.defaults.subagents.maxConcurrent=50`
-  ceiling so one parent cannot consume every available slot.
+  ceiling so one parent cannot consume every available slot;
+- set `channels.discord.streaming.mode` and each active Discord account
+  override to `progress`, so interactive turns and directly delivered
+  thread-bound `mode="session"` subagents show temporary tool/work status
+  drafts before normal final delivery.
 
 This means:
 
@@ -2108,33 +2112,36 @@ phases, but each deployment must retain a clean rollback point.
 20. Verify an ordinary Discord correction during model generation redirects
     the same logical turn, and a correction during tool execution waits for a
     safe boundary.
-21. Verify the interactive TUI follows the same global redirect policy.
-22. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
-23. Verify a Discord message round trip.
-24. Verify `/new`.
-25. Verify manual `/compact`, stateful automatic recovery, and stateless
+21. Verify Discord `progress` mode shows work status for both the interactive
+    Main session and a directly delivered thread-bound subagent, while each
+    final answer is delivered exactly once in its correct channel or thread.
+22. Verify the interactive TUI follows the same global redirect policy.
+23. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
+24. Verify a Discord message round trip.
+25. Verify `/new`.
+26. Verify manual `/compact`, stateful automatic recovery, and stateless
     subagent native fallback.
-26. Verify active-subagent steering, cancellation, follow-up-after-finalization,
+27. Verify active-subagent steering, cancellation, follow-up-after-finalization,
     and absence of duplicate finals or takeover errors.
-27. Verify the exec schema advertises only live session capabilities and that
+28. Verify the exec schema advertises only live session capabilities and that
     explicit unavailable hosts still fail safely.
-28. Verify model-call idle and WebSocket recovery uses one bounded retry,
+29. Verify model-call idle and WebSocket recovery uses one bounded retry,
     preserves completed tools, and surfaces an exhausted failure visibly.
-29. Verify Firecrawl is the only configured web-search provider, performs one
+30. Verify Firecrawl is the only configured web-search provider, performs one
     safe search and one safe fetch successfully, and does not expose its
     credential.
-30. Verify existing sessions, cron delivery, subagent execution, restart
+31. Verify existing sessions, cron delivery, subagent execution, restart
     recovery, and absence of runtime JSON fallback.
-31. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
+32. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
     block-write, and LCM metrics during normal load.
-32. For Batch 5, keep the superseded completion watcher, janitor, and weekly
+33. For Batch 5, keep the superseded completion watcher, janitor, and weekly
     timer disabled; run one disposable cron lifecycle canary, copied-fixture
     stale recovery, and production `lcm maintain` dry-run. For deployments
     before Batch 5, resume only the helpers recorded active in the baseline.
-33. Verify the lifecycle canary archives only its exact conversation, produces
+34. Verify the lifecycle canary archives only its exact conversation, produces
     one acknowledged receipt, survives duplicate delivery, and leaves active
     Discord/non-cron counts unchanged.
-34. Update the global rebase skill with final commit hashes and any durable
+35. Update the global rebase skill with final commit hashes and any durable
     workflow facts learned from deployment, then verify its complete readback
     before final handoff.
 
