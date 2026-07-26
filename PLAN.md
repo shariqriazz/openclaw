@@ -1230,6 +1230,49 @@ acknowledgement, multiple-message order, tool-boundary adoption, cancellation,
 and takeover enforcement. This patch does not add a second queue, weaken the
 takeover fence, change public spawn modes, or change the idle completion path.
 
+#### Defer restored completion delivery until Gateway dispatch is ready
+
+Status: implemented and locally verified on 2026-07-26 in OpenClaw commit
+`11a57aae495`.
+
+The first production start after the admission fix exposed a separate startup
+ordering bug. `prepareGatewayPluginBootstrap()` restored the subagent registry
+before `startGatewayServer()` installed the fallback Gateway request context.
+A persisted completion therefore attempted an in-process `agent` dispatch
+without either request scope, failed repeatedly, and entered suspended delivery
+even though its child result remained intact.
+
+Implemented fix:
+
+1. Keep plugin bootstrap and subagent registry restoration separate.
+2. Start registry restoration only after the fallback Gateway request context
+   and its cleanup owner exist.
+3. On that boundary, reactivate only deliveries whose persisted error proves
+   they were suspended because no Gateway request scope or fallback context was
+   available.
+4. Persist the reactivated pending state before retrying, preserve the original
+   completion payload and idempotency identity, and leave provider timeouts or
+   every other suspended-delivery reason untouched.
+
+Change surface:
+
+- `src/gateway/server.impl.ts`;
+- `src/gateway/server-startup-plugins.ts`;
+- `src/gateway/server-startup-plugins.test.ts`;
+- `src/agents/subagent-registry.ts`;
+- `src/agents/subagent-registry.test.ts`.
+
+Implemented proof:
+
+- plugin bootstrap does not restore subagents early;
+- Gateway-ready startup initializes restoration and scoped recovery once;
+- the observed startup-context error reactivates and retries exactly once;
+- an unrelated suspended provider timeout remains suspended;
+- the surrounding admission, registry, Gateway lifecycle, and embedded-run
+  suites pass: 579 tests;
+- core production and source-test `tsgo` checks pass;
+- formatting and diff checks pass.
+
 ### Rebase-skill maintenance
 
 Every implemented fork-only behavior becomes part of the maintained patch
