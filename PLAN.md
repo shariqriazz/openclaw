@@ -88,8 +88,9 @@ Approved `openclaw.json` changes:
   retaining the process-wide `agents.defaults.subagents.maxConcurrent=50`
   ceiling so one parent cannot consume every available slot;
 - set `channels.discord.streaming.mode` and each active Discord account
-  override to `progress`, so ordinary interactive Discord turns show temporary
-  tool/work status drafts before normal final delivery. Directly delivered
+  override to `partial`, so ordinary interactive Discord turns show the
+  evolving assistant response instead of primarily reporting tool/status
+  activity. Directly delivered
   thread-bound `mode="session"` subagents currently bypass that compositor and
   require the planned presentation fix below.
 
@@ -769,8 +770,8 @@ use the Discord progress/draft compositor. A thread-bound native subagent
 started through `sessions_spawn` instead invokes the Gateway agent path with
 direct delivery. That path delivers the final response to the child thread but
 bypasses the inbound Discord handler that owns partial, block, and progress
-drafts. Setting `progress` in `openclaw.json` therefore does not currently make
-those subagent threads show progress.
+drafts. Configured streaming modes therefore do not currently affect those
+subagent threads.
 
 Add one channel-owned presentation seam to direct agent delivery. A
 thread-bound subagent must resolve and honor the same effective configured
@@ -780,6 +781,10 @@ mode as its target channel/account:
 - `partial`: the channel's existing partial-response behavior;
 - `block`: the channel's existing block-streaming behavior;
 - `progress`: temporary tool/work status followed by the normal final.
+
+This installation will select `partial` globally and for its active Discord
+account overrides after the implementation passes. The other modes remain
+supported configuration choices rather than fork-specific behavior.
 
 Do not hardcode Discord `progress` in the subagent runtime and do not add a
 second transcript or execution path. The child run remains owned by the
