@@ -80,6 +80,7 @@ const RETRY_AFTER_HTTP_DATE_RE =
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "opencode"]);
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
+const MAX_WEBSOCKET_RECONNECTS = 3;
 const OPENAI_CHATGPT_RESPONSES_ERROR_BODY_MAX_BYTES = 16 * 1024;
 const OPENAI_CHATGPT_RESPONSES_SUCCESS_BODY_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -316,7 +317,7 @@ export const streamOpenAICodexResponses: StreamFunction<
 
       if (transport !== "sse" && !websocketDisabledForSession) {
         let websocketStarted = false;
-        let retriedWebSocketConnectionLimit = false;
+        let websocketReconnects = 0;
         while (true) {
           websocketStarted = false;
           try {
@@ -349,14 +350,20 @@ export const streamOpenAICodexResponses: StreamFunction<
             const aborted = activeSignal?.aborted;
             const connectionLimitBeforeStart =
               !websocketStarted && isWebSocketConnectionLimitReachedError(error);
-            if (!aborted && connectionLimitBeforeStart && !retriedWebSocketConnectionLimit) {
-              retriedWebSocketConnectionLimit = true;
-              continue;
-            }
             if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
               throw error;
             }
             const semanticOutputStarted = output.content.length > 0;
+            if (!semanticOutputStarted && websocketReconnects < MAX_WEBSOCKET_RECONNECTS) {
+              websocketReconnects++;
+              recordWebSocketFailure(options?.sessionId, error, {
+                activateSseFallback: false,
+              });
+              // Metadata-only events do not make replay unsafe, but their response id
+              // belongs to the failed socket and cannot seed the reconnect.
+              delete output.responseId;
+              continue;
+            }
             appendAssistantMessageDiagnostic(
               output,
               createAssistantMessageDiagnostic("provider_transport_failure", error, {

@@ -289,9 +289,11 @@ describe("streamOpenAICodexResponses transport", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to SSE after metadata-only websocket progress", async () => {
+  it("reconnects websocket after metadata-only progress", async () => {
+    let connections = 0;
     class MetadataThenFailingWebSocket extends EventTarget {
       readyState = 1;
+      private readonly shouldFail = connections++ === 0;
 
       constructor() {
         super();
@@ -300,15 +302,24 @@ describe("streamOpenAICodexResponses transport", () => {
 
       send(): void {
         queueMicrotask(() => {
-          this.dispatchEvent(
-            Object.assign(new Event("message"), {
-              data: JSON.stringify({
+          const event = this.shouldFail
+            ? {
                 type: "response.created",
                 response: { id: "resp_ws_metadata", status: "in_progress", output: [] },
-              }),
-            }),
-          );
-          this.dispatchEvent(Object.assign(new Event("error"), { message: "socket dropped" }));
+              }
+            : {
+                type: "response.completed",
+                response: {
+                  id: "resp_ws_recovery",
+                  status: "completed",
+                  output: [],
+                  usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+                },
+              };
+          this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify(event) }));
+          if (this.shouldFail) {
+            this.dispatchEvent(Object.assign(new Event("error"), { message: "socket dropped" }));
+          }
         });
       }
 
@@ -328,6 +339,46 @@ describe("streamOpenAICodexResponses transport", () => {
       transport: "auto",
     }).result();
 
+    expect(connections).toBe(2);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.stopReason).toBe("stop");
+    expect(result.responseId).toBe("resp_ws_recovery");
+  });
+
+  it("falls back to SSE after three websocket reconnects fail", async () => {
+    let connections = 0;
+    class FailingWebSocket extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        connections++;
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
+      }
+
+      send(): void {
+        queueMicrotask(() => {
+          this.dispatchEvent(Object.assign(new Event("error"), { message: "socket dropped" }));
+        });
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    const fetchMock = vi.fn(async () => completedSseResponse("resp_sse_recovery"));
+    vi.stubGlobal("WebSocket", FailingWebSocket);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      sessionId: "session-sse-recovery",
+      transport: "auto",
+    }).result();
+
+    expect(connections).toBe(4);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.stopReason).toBe("stop");
     expect(result.responseId).toBe("resp_sse_recovery");
