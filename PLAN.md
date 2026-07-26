@@ -4,9 +4,9 @@
   validated, and locally deployed; model-call transport recovery is
   implemented, focused-tested, and built with its live canary pending, while
   post-deployment evidence keeps the gated Phase 2 session-store investigation
-  open; Discord thread-bound subagent streaming is implemented and
-  focused-tested, while its production configuration, numeric `/usage full`
-  context reporting, and device pairing await the coordinated deployment
+  open; Discord thread-bound subagent streaming, partial Discord presentation,
+  numeric `/usage full` context reporting, and device pairing are implemented,
+  validated, built, and deployed
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -786,9 +786,9 @@ configured mode as its target channel/account:
 - `block`: the channel's existing block-streaming behavior;
 - `progress`: temporary tool/work status followed by the normal final.
 
-This installation will select `partial` globally and for its active Discord
-account overrides after the implementation passes. The other modes remain
-supported configuration choices rather than fork-specific behavior.
+This installation selects `partial` globally and for its active Discord
+account overrides. The other modes remain supported configuration choices
+rather than fork-specific behavior.
 
 Do not hardcode Discord `progress` in the subagent runtime and do not add a
 second transcript or execution path. The child run remains owned by the
@@ -864,9 +864,10 @@ Enable the bundled `device-pair` plugin for this installation by adding
 node setup and approval; it must not change Discord routing, agent sessions,
 queue behavior, LCM ownership, or existing channel pairing.
 
-After the next planned Gateway restart, verify that `/pair qr` produces the
-supported short-lived iOS setup flow, the resulting request is exact
-device-role pairing, and normal Discord messages still round-trip unchanged.
+The deployed Gateway loads the bundled plugin and exposes its `pair` command.
+When pairing is requested, verify that `/pair qr` produces the supported
+short-lived iOS setup flow, the resulting request is exact device-role pairing,
+and normal Discord messages still round-trip unchanged.
 Do not weaken Gateway authentication, device approval, or transport security
 to make pairing work. Same-LAN pairing may use the existing authenticated LAN
 Gateway; remote pairing must use the supported secure `wss://` or Tailscale
