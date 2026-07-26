@@ -68,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   loadConfigReturn: {} as Record<string, unknown>,
   loadVoiceWakeRoutingConfig: vi.fn(),
   resolveVoiceWakeRouteByTrigger: vi.fn(),
+  prepareActiveSessionMessageDelivery: vi.fn(),
   getChannelPlugin: vi.fn(),
   sendDurableMessageBatch: vi.fn(),
   resolveSendPolicy: vi.fn((_args?: { entry?: { sendPolicy?: string } }) => "allow"),
@@ -116,6 +117,16 @@ vi.mock("../../commands/agent.js", () => ({
   agentCommand: mocks.agentCommand,
   agentCommandFromIngress: mocks.agentCommand,
 }));
+
+vi.mock("../../agents/embedded-agent-runner/runs.js", async () => {
+  const actual = await vi.importActual<typeof import("../../agents/embedded-agent-runner/runs.js")>(
+    "../../agents/embedded-agent-runner/runs.js",
+  );
+  return {
+    ...actual,
+    prepareActiveSessionMessageDelivery: mocks.prepareActiveSessionMessageDelivery,
+  };
+});
 
 vi.mock("../../acp/runtime/session-meta.js", async () => {
   const actual = await vi.importActual<typeof import("../../acp/runtime/session-meta.js")>(
@@ -636,6 +647,7 @@ describe("gateway agent handler", () => {
     mocks.resolveAgentExplicitRecipientSession.mockReset().mockResolvedValue({});
     mocks.readAcpSessionMeta.mockReset().mockReturnValue(undefined);
     mocks.listAgentIds.mockReset().mockReturnValue(["main"]);
+    mocks.prepareActiveSessionMessageDelivery.mockReset().mockReturnValue(undefined);
     mocks.getChannelPlugin.mockReset();
     mocks.sendDurableMessageBatch.mockReset();
     mocks.resolveSendPolicy.mockReset().mockReturnValue("allow");
@@ -3027,6 +3039,122 @@ describe("gateway agent handler", () => {
     expect(callArgs.preserveUserFacingSessionModelState).toBe(true);
     expect(callArgs.message).toMatch(/^\[Inter-session message\]/);
     expect(callArgs.message).toContain("sourceTool=subagent_announce");
+  });
+
+  it("adopts a raced subagent completion into the active requester run", async () => {
+    primeMainAgentRun({ cfg: mocks.loadConfigReturn });
+    mocks.agentCommand.mockClear();
+    mocks.prepareActiveSessionMessageDelivery.mockReturnValue({
+      sessionId: "existing-session-id",
+      outcome: Promise.resolve({
+        queued: true,
+        sessionId: "existing-session-id",
+        target: "embedded_run",
+        gatewayHealth: "live",
+      }),
+    });
+
+    const respond = await invokeAgent(
+      {
+        message: "child completed",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:subagent:child",
+          sourceTool: "subagent_announce",
+        },
+        internalEvents: [
+          {
+            type: "task_completion",
+            source: "subagent",
+            childSessionKey: "agent:main:subagent:child",
+            childSessionId: "child-session-id",
+            announceType: "completion",
+            taskLabel: "child task",
+            status: "ok",
+            statusLabel: "completed",
+            result: "child result",
+            replyInstruction: "Continue the requester workflow.",
+          },
+        ],
+        idempotencyKey: "test-raced-subagent-completion",
+      },
+      {
+        reqId: "raced-subagent-completion",
+        client: backendGatewayClient(),
+      },
+    );
+
+    expect(mocks.prepareActiveSessionMessageDelivery).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      text: "child completed",
+      options: {
+        steeringMode: "all",
+        waitForTranscriptCommit: true,
+      },
+    });
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        runId: "test-raced-subagent-completion",
+        sessionKey: "agent:main:main",
+        status: "in_flight",
+      },
+      undefined,
+      {
+        runId: "test-raced-subagent-completion",
+      },
+    );
+  });
+
+  it("starts the completion turn when raced active delivery is rejected", async () => {
+    primeMainAgentRun({ cfg: mocks.loadConfigReturn });
+    mocks.agentCommand.mockClear();
+    mocks.prepareActiveSessionMessageDelivery.mockReturnValue({
+      sessionId: "existing-session-id",
+      outcome: Promise.resolve({
+        queued: false,
+        sessionId: "existing-session-id",
+        reason: "runtime_rejected",
+        gatewayHealth: "live",
+      }),
+    });
+
+    await invokeAgent(
+      {
+        message: "child completed",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:subagent:child",
+          sourceTool: "subagent_announce",
+        },
+        internalEvents: [
+          {
+            type: "task_completion",
+            source: "subagent",
+            childSessionKey: "agent:main:subagent:child",
+            childSessionId: "child-session-id",
+            announceType: "completion",
+            taskLabel: "child task",
+            status: "ok",
+            statusLabel: "completed",
+            result: "child result",
+            replyInstruction: "Continue the requester workflow.",
+          },
+        ],
+        idempotencyKey: "test-rejected-raced-subagent-completion",
+      },
+      {
+        reqId: "rejected-raced-subagent-completion",
+        client: backendGatewayClient(),
+      },
+    );
+
+    expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
   });
 
   it("does not let public provenance suppress visible session accounting", async () => {

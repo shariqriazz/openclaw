@@ -33,6 +33,7 @@ import {
   formatEmbeddedAgentQueueFailureSummary,
   markActiveEmbeddedRunAbandoned,
   markEmbeddedRunAbandoned,
+  prepareActiveSessionMessageDelivery,
   queueEmbeddedAgentMessageWithOutcome,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   retainEmbeddedAgentRunAbortabilityForRunId,
@@ -555,6 +556,49 @@ describe("embedded-agent runner run registry", () => {
     expect(formatEmbeddedAgentQueueFailureSummary(outcome)).toBe(
       "queue_message_failed reason=runtime_rejected sessionId=session-rejected gatewayHealth=live error=cannot steer a compact turn",
     );
+  });
+
+  it("starts active-session delivery before returning admission to the caller", async () => {
+    let finishDelivery = () => {};
+    const delivery = new Promise<void>((resolve) => {
+      finishDelivery = resolve;
+    });
+    const queueMessage = vi.fn(() => delivery);
+    setActiveEmbeddedRun(
+      "session-active",
+      createRunHandle({
+        queueMessage,
+        supportsTranscriptCommitWait: true,
+      }),
+      "agent:main:main",
+    );
+
+    const prepared = prepareActiveSessionMessageDelivery({
+      sessionKey: "agent:main:main",
+      text: "child completed",
+      options: { steeringMode: "all", waitForTranscriptCommit: true },
+    });
+
+    expect(prepared?.sessionId).toBe("session-active");
+    expect(queueMessage).toHaveBeenCalledWith("child completed", {
+      steeringMode: "all",
+      waitForTranscriptCommit: true,
+    });
+    finishDelivery();
+    await expect(prepared?.outcome).resolves.toMatchObject({
+      queued: true,
+      sessionId: "session-active",
+      target: "embedded_run",
+    });
+  });
+
+  it("does not reserve delivery when the session has no active owner", () => {
+    expect(
+      prepareActiveSessionMessageDelivery({
+        sessionKey: "agent:main:main",
+        text: "child completed",
+      }),
+    ).toBeUndefined();
   });
 
   it("rejects transcript-commit waits for active handles without support", async () => {

@@ -35,6 +35,7 @@ import {
   EMBEDDED_RUN_WAITERS,
   getActiveEmbeddedRunCount,
   RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS,
+  resolveActiveEmbeddedRunSessionId,
   type ActiveEmbeddedRunSnapshot,
   type AbandonedEmbeddedRun,
   type EmbeddedAgentQueueHandle,
@@ -77,6 +78,11 @@ export type EmbeddedAgentQueueMessageOutcome =
       gatewayHealth: "live";
       errorMessage?: string;
     };
+
+export type PreparedActiveSessionMessageDelivery = {
+  sessionId: string;
+  outcome: Promise<EmbeddedAgentQueueMessageOutcome>;
+};
 
 type PreparedEmbeddedAgentQueueMessage =
   | {
@@ -432,6 +438,26 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
     diag.debug(`queue message rejected: sessionId=${sessionId} err=${errorMessage}`);
     return createQueueFailureOutcome(sessionId, "runtime_rejected", errorMessage);
   }
+}
+
+/**
+ * Claims the current active session, if any, and starts queue delivery before
+ * returning. Callers may proceed with a new turn only when this returns undefined
+ * or its outcome rejects delivery, preventing an active-run check/admission race.
+ */
+export function prepareActiveSessionMessageDelivery(params: {
+  sessionKey: string;
+  text: string;
+  options?: EmbeddedAgentQueueMessageOptions;
+}): PreparedActiveSessionMessageDelivery | undefined {
+  const sessionId = resolveActiveEmbeddedRunSessionId(params.sessionKey);
+  if (!sessionId) {
+    return undefined;
+  }
+  return {
+    sessionId,
+    outcome: queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, params.text, params.options),
+  };
 }
 
 function prepareEmbeddedAgentQueueMessage(

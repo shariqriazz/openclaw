@@ -39,6 +39,7 @@ import type { AgentCommandOpts } from "../../agents/command/types.js";
 import {
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
+  prepareActiveSessionMessageDelivery,
   retainEmbeddedAgentRunAbortabilityForRunId,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { isTimeoutError } from "../../agents/failover-error.js";
@@ -1251,6 +1252,12 @@ export const agentHandlers: GatewayRequestHandlers = {
     const preserveUserFacingSessionModelState =
       canUseInternalRuntimeHandoff &&
       shouldPreserveUserFacingSessionStateForInputProvenance(inputProvenance);
+    const trustedSubagentCompletionHandoff =
+      canUseInternalRuntimeHandoff &&
+      shouldSuppressAgentPromptPersistence({
+        inputProvenance,
+        internalEvents: request.internalEvents,
+      });
     const sessionEffects = requestedInternalSessionEffects ? "internal" : request.sessionEffects;
     const suppressVisibleSessionEffects = sessionEffects === "internal";
     const agentDedupeKeys = resolveAgentDedupeKeys({
@@ -3055,6 +3062,42 @@ export const agentHandlers: GatewayRequestHandlers = {
           lifecycleRotatedDuringAdmission,
         );
         if (!hasAdmissionOutcome) {
+          const preparedCompletionDelivery =
+            trustedSubagentCompletionHandoff && resolvedSessionKey
+              ? prepareActiveSessionMessageDelivery({
+                  sessionKey: resolvedSessionKey,
+                  text: request.message.trim(),
+                  options: {
+                    steeringMode: "all",
+                    waitForTranscriptCommit: true,
+                    ...(request.sourceReplyDeliveryMode
+                      ? { sourceReplyDeliveryMode: request.sourceReplyDeliveryMode }
+                      : {}),
+                  },
+                })
+              : undefined;
+          const completionDelivery = preparedCompletionDelivery
+            ? await preparedCompletionDelivery.outcome
+            : undefined;
+          if (completionDelivery?.queued) {
+            const payload = {
+              runId,
+              sessionKey: resolvedSessionKey,
+              status: "in_flight" as const,
+            };
+            agentRunAccepted = true;
+            setGatewayDedupeEntries({
+              dedupe: context.dedupe,
+              keys: agentDedupeKeys,
+              entry: {
+                ts: Date.now(),
+                ok: true,
+                payload,
+              },
+            });
+            respond(true, payload, undefined, { runId });
+            return;
+          }
           admittedRunAbort = registerChatAbortController({
             chatAbortControllers: context.chatAbortControllers,
             runId,
