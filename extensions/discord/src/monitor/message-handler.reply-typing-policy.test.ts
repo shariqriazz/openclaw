@@ -39,7 +39,7 @@ function createPolicyContext(
     isDirectMessage: true,
     isGuildMessage: false,
     isGroupDm: false,
-    inboundEventKind: "message",
+    inboundEventKind: "user_request",
     effectiveWasMentioned: false,
     ...overrides,
   } as DiscordMessagePreflightContext;

@@ -149,7 +149,7 @@ export function createDiscordMessageRunQueue(
       const activeReply = (params.testing?.isReplyRunActive ?? isReplyRunActive)(job.queueKey);
       const canJoinActiveReply =
         activeReply &&
-        job.payload.inboundEventKind === "message" &&
+        job.payload.inboundEventKind === "user_request" &&
         job.payload.hasControlCommand !== true &&
         (job.payload.preparedMedia?.length ?? 0) === 0;
       if (canJoinActiveReply) {

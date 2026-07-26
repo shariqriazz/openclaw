@@ -110,7 +110,7 @@ function createPreflightContext(channelId = "ch-1") {
     isDirectMessage: false,
     isGuildMessage: true,
     isGroupDm: false,
-    inboundEventKind: "message" as const,
+    inboundEventKind: "user_request" as const,
     effectiveWasMentioned: false,
   };
 }

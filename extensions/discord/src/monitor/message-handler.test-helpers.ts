@@ -76,7 +76,7 @@ export function createDiscordPreflightContext(channelId = "ch-1") {
     isDirectMessage: true,
     isGroupDm: false,
     isGuildMessage: false,
-    inboundEventKind: "message",
+    inboundEventKind: "user_request",
     effectiveWasMentioned: false,
   };
 }
