@@ -7,8 +7,9 @@
   open; Discord thread-bound subagent streaming, partial Discord presentation,
   numeric `/usage full` context reporting, device pairing, Discord voice
   configuration, and OAuth media defaults are implemented, validated, and
-  deployed; the spoken voice and provider-generating media canaries remain
-  operator-triggered
+  deployed; the yielded-requester completion admission race is implemented,
+  focused-tested, and built; the spoken voice and provider-generating media
+  canaries remain operator-triggered
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -56,6 +57,9 @@ commits, validation gates, deployment steps, and rollback points:
 15. Fix one-shot threaded-subagent completion routing so the existing
     `thread=true, mode="run"` contract wakes the requester on its original
     route without changing child-thread presentation or any public mode.
+16. Make subagent completion admission atomic with active requester ownership
+    so a user message racing a completed child cannot strand the completion
+    behind the newly active Main turn.
 
 The deployed OpenClaw performance architecture is one bounded trajectory
 worker. The next low-risk performance change is an LCM diagnostic-cache fix.
@@ -116,9 +120,10 @@ Approved `openclaw.json` changes:
   route voice turns to Vigil's canonical Main Discord channel session and set
   `realtime.consultPolicy="always"` so substantive work continues through the
   normal GPT-5.6 Sol agent, tools, LCM context, and transcript lifecycle;
-  require the wake name `Vigil`, configure `followUsers` only for the existing
-  Discord owner, do not configure `autoJoin`, and do not add an API-key
-  fallback, so Vigil follows only the owner's voice-channel presence;
+  respond automatically to speech from the configured Discord owner, configure
+  `followUsers` only for that owner, do not configure `autoJoin`, and do not add
+  an API-key fallback, so Vigil follows only the owner's voice-channel
+  presence;
 - configure OpenAI image generation through the existing Codex OAuth profile;
   configure xAI image fallback and xAI video generation through the existing
   xAI OAuth profile, without adding separately billed API keys; use live
@@ -939,8 +944,7 @@ active `openai/oauth` profile can create an OpenAI Realtime session. Use:
           provider: "openai",
           model: "gpt-realtime-2.1",
           consultPolicy: "always",
-          requireWakeName: true,
-          wakeNames: ["Vigil"],
+          requireWakeName: false,
         },
       },
     },
@@ -953,6 +957,13 @@ binding and `252573430216523777` as its existing Discord owner identity; do not
 create a new session or change either identity. Do not configure `autoJoin`.
 Vigil must join only when that owner enters or moves between voice channels,
 and must leave when the owner disconnects.
+
+The first live canary proved audio capture and OpenAI Realtime connectivity but
+also showed that literal wake matching is not reliable for this setup: the
+spoken name `Vigil` was translated in the provider transcript and rejected by
+the local matcher. Owner identity already gates voice control, so requiring a
+second transcript-level wake gate prevents valid speech without adding a
+necessary authorization boundary.
 
 The OpenAI Realtime model owns audio capture, turn timing, wake-name handling,
 barge-in, and speech playback. Every substantive turn is consulted through the
@@ -970,7 +981,8 @@ Validation:
   using the existing OAuth profile without requiring `/vc join`;
 - a substantive spoken request invokes Vigil Main on GPT-5.6 Sol and returns
   the answer through voice;
-- wake-name gating ignores unrelated room speech;
+- only the configured owner is accepted for agent-proxy voice control, and
+  their speech does not depend on a literal wake-name transcript;
 - simultaneous text and voice input preserves one Main-session owner and
   consumes each correction exactly once;
 - moving voice channels moves Vigil once; owner disconnect closes voice
@@ -1116,6 +1128,107 @@ Proof:
 - Discord streaming coverage proves successful child output remains finalized
   in its bound thread;
 - the surrounding 79-test subagent announcement E2E suite remains green.
+
+#### Fix yielded-requester completion admission race
+
+Status: implemented and locally verified on 2026-07-26 in OpenClaw commit
+`3965ccf29f0`.
+
+This is separate from the completed Discord requester-route fix above. Main
+launched Reviewer 2 correctly with `mode="run"`,
+`expectsCompletionMessage=true`, and then called `sessions_yield`. The child
+completed successfully and its result, task projection, and requester route
+were intact.
+
+Incident replay:
+
+- Reviewer 2 run `0a84a5e6-f4ce-4096-ba30-01a1d9f0ca47` ended successfully at
+  `2026-07-26T13:59:13.479Z`.
+- An ordinary Main user message arrived at
+  `2026-07-26T13:59:18.899Z`, approximately 5.4 seconds later.
+- Completion delivery had selected the requester-idle direct `agent` path, but
+  the ordinary message acquired Main's canonical session lane before that
+  direct completion turn was admitted.
+- At `2026-07-26T14:01:48.907Z`, lane telemetry reported the completion had
+  waited `149479ms` with one active operation ahead.
+- The completion finally ran and was durably marked delivered at
+  `2026-07-26T14:02:17.568Z`. It was delayed, not lost; by then the user had
+  already awakened Main and Main had manually inspected the child.
+
+The root cause is a time-of-check/time-of-use race between
+`resolveRequesterSessionActivity()` and actual canonical-lane admission in
+`src/agents/subagent-announce-delivery.ts`. When the precheck sees an active
+requester, completion uses `resolveActiveWakeWithRetries()` and enters the
+operation-owned queue. When it sees an idle requester, it submits a direct
+Gateway `agent` call. If ordinary input activates the same session between that
+precheck and lane admission, the direct call remains a separate queued turn;
+the Gateway does not reclassify the trusted `subagent_announce` handoff as an
+active-operation wake.
+
+This explains why Main's launch and `sessions_yield` were correct, why the
+child succeeded, why no announcement error was recorded, and why the completion
+event appeared only after Main's intervening turn finished. The existing
+activity precheck is useful as a fast path but cannot be the ownership
+decision.
+
+Implemented fix:
+
+1. Keep the existing completion route, child result, `sessions_yield`, and
+   public spawn modes unchanged.
+2. At the final canonical session-lane admission boundary, classify
+   a trusted `inputProvenance.kind="inter_session"` /
+   `sourceTool="subagent_announce"` request against the current active reply
+   operation.
+3. If an operation is active and can still adopt input, enqueue the
+   `task_completion` internal event through
+   `queueEmbeddedAgentMessageWithOutcomeAsync()` with transcript-commit
+   acknowledgement, and suppress the separate direct model turn.
+4. If the operation is already finalizing, use one deterministic commit
+   barrier: either the completion is adopted before final commit or the same
+   idempotent completion becomes exactly one follow-up turn afterward.
+5. If the requester is still idle at admission, retain the current direct
+   completion turn.
+6. Preserve the existing announcement idempotency key across direct-to-active
+   conversion. Mark delivery complete only after active-operation adoption or
+   direct-turn acceptance reaches its durable boundary.
+7. On restart after acceptance but before adoption, replay the pending delivery
+   once with the same idempotency identity. Do not duplicate the child result,
+   model turn, transcript event, Discord message, or tool side effect.
+8. Keep unknown inter-session writers and transcript mutation behind the strict
+   takeover fence. Do not solve this by prioritizing all internal traffic,
+   weakening lane serialization, polling, or special-casing Discord.
+
+The ownership decision belongs in the Gateway/session admission path, with
+`subagent-announce-delivery.ts` retaining routing and delivery-state
+orchestration. A second precheck immediately before `agent` dispatch would only
+narrow the race; it would not close it.
+
+Change surface:
+
+- `src/gateway/server-methods/agent.ts`;
+- `src/gateway/server-methods/agent.test.ts`;
+- `src/agents/embedded-agent-runner/runs.ts`;
+- `src/agents/embedded-agent-runner/runs.test.ts`.
+
+Implemented proof:
+
+- idle requester remains idle through admission: exactly one direct completion
+  turn;
+- requester becomes active after the delivery precheck but before lane
+  admission: completion converts to one active-operation wake and no direct
+  model turn starts;
+- active delivery starts synchronously before final admission returns control,
+  closing the observed check/admission window;
+- failed active adoption retains the existing direct completion path;
+- sessions with no active owner do not reserve an active delivery;
+- the complete surrounding Gateway and embedded-run suites pass: 435 tests;
+- core production and source-test `tsgo` checks pass;
+- the production build completes from commit `3965ccf29f0`.
+
+The existing active-run queue owns finalization ordering, transcript-commit
+acknowledgement, multiple-message order, tool-boundary adoption, cancellation,
+and takeover enforcement. This patch does not add a second queue, weaken the
+takeover fence, change public spawn modes, or change the idle completion path.
 
 ### Rebase-skill maintenance
 
@@ -2496,9 +2609,9 @@ phases, but each deployment must retain a clean rollback point.
 25. Verify a Discord message round trip.
 26. Verify Discord voice remains idle while the owner is absent, joins when the
     owner enters the configured voice channel, follows one channel move, handles
-    one wake-name-gated spoken request through Vigil Main on GPT-5.6 Sol, speaks
-    the answer once, and leaves when the owner disconnects without affecting
-    text.
+    one owner-spoken request through Vigil Main on GPT-5.6 Sol without requiring
+    a wake name, speaks the answer once, and leaves when the owner disconnects
+    without affecting text.
 27. Verify OpenAI image generation through Codex OAuth. Separately canary xAI
     OAuth image and then minimum-cost video generation; if account entitlement
     rejects either capability, remove only its configured default.
@@ -2665,6 +2778,10 @@ The current implementation batch is complete when:
 - Vigil can create, wait, resume, finish, fail, and cancel a disposable managed
   TaskFlow through the approved controller while ordinary mirrored subagent
   flows and `sessions_yield` behavior remain unchanged;
+- a completion that races ordinary input is atomically adopted by the active
+  requester operation or becomes exactly one post-finalization follow-up,
+  without a competing model turn, duplicate result, lost wake, or unbounded
+  lane wait;
 - exact post-persist cron lifecycle events archive one matching LCM
   conversation across success, error, timeout, delivery failure, duplicate,
   overlap, and restart cases;
