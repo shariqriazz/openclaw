@@ -5,8 +5,10 @@
   implemented, focused-tested, and built with its live canary pending, while
   post-deployment evidence keeps the gated Phase 2 session-store investigation
   open; Discord thread-bound subagent streaming, partial Discord presentation,
-  numeric `/usage full` context reporting, and device pairing are implemented,
-  validated, built, and deployed
+  numeric `/usage full` context reporting, device pairing, Discord voice
+  configuration, and OAuth media defaults are implemented, validated, and
+  deployed; the spoken voice and provider-generating media canaries remain
+  operator-triggered
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -48,6 +50,12 @@ commits, validation gates, deployment steps, and rollback points:
 13. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
     patch histories, protected behavior, validation commands, and deployment
     lessons before final handoff.
+14. Enable deliberate managed TaskFlow orchestration for Vigil after a
+    separately reviewed configuration and canary, while preserving native
+    mirrored flows for ordinary detached tasks.
+15. Fix one-shot threaded-subagent completion routing so the existing
+    `thread=true, mode="run"` contract wakes the requester on its original
+    route without changing child-thread presentation or any public mode.
 
 The deployed OpenClaw performance architecture is one bounded trajectory
 worker. The next low-risk performance change is an LCM diagnostic-cache fix.
@@ -93,7 +101,28 @@ Approved `openclaw.json` changes:
   evolving assistant response instead of primarily reporting tool/status
   activity. Directly delivered
   thread-bound `mode="session"` subagents currently bypass that compositor and
-  require the planned presentation fix below.
+  require the planned presentation fix below;
+- simplify `messages.usageTemplate` to a plain-text footer. Remove the fallback
+  identity robot, reasoning moon, fast-mode snail/lightning, context-book, and
+  cost-money glyphs. Preserve the underlying provider/model, reasoning, speed,
+  numeric context, and cost information as text. Keep model aliases only for
+  `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and `grok-4.5`; remove stale
+  aliases for models this installation does not use;
+- remove `channels.discord.accounts.default`. All Discord bindings explicitly
+  select `vigil`; only `vigil` has credentials and guild mappings. Preserve the
+  top-level Discord policy and the `vigil` account unchanged.
+- enable Discord live voice for the `vigil` account in `agent-proxy` mode,
+  using the existing OpenAI OAuth profile rather than a separate API key;
+  route voice turns to Vigil's canonical Main Discord channel session and set
+  `realtime.consultPolicy="always"` so substantive work continues through the
+  normal GPT-5.6 Sol agent, tools, LCM context, and transcript lifecycle;
+  require the wake name `Vigil`, configure `followUsers` only for the existing
+  Discord owner, do not configure `autoJoin`, and do not add an API-key
+  fallback, so Vigil follows only the owner's voice-channel presence;
+- configure OpenAI image generation through the existing Codex OAuth profile;
+  configure xAI image fallback and xAI video generation through the existing
+  xAI OAuth profile, without adding separately billed API keys; use live
+  canaries to verify account-tier entitlement and local wiring.
 
 This means:
 
@@ -837,7 +866,7 @@ Required tests:
 Use the supported `messages.usageTemplate` configuration surface; no OpenClaw
 source patch or new usage mode is required. Preserve every existing full-usage
 field, including provider/model, reasoning effort, speed mode, and cost, while
-replacing only the visual context meter with:
+rendering them as plain text and replacing the visual context meter with:
 
 ```text
 Context: {context.used_tokens|num}/{context.max_tokens|num} ({context.pct_used|fixed:0}%)
@@ -850,11 +879,26 @@ equivalent to:
 openai · GPT-5.6-Sol · medium · slow | Context: 89k/372k (24%) | $0.15
 ```
 
+Do not render identity, reasoning, speed, context, or cost emoji in this
+installation's footer. Missing values must be omitted cleanly rather than
+replaced with decorative fallback glyphs. The footer's model alias table must
+contain only the three configured GPT-5.6 variants and Grok 4.5.
+
 Activate it through the supported `messages.responseUsage` scope selected for
 this installation. Preserve session-level `/usage` override precedence:
 explicit `/usage off` remains off until `/usage reset`; configuration must not
 silently overwrite a persisted session choice. Validate zero/unknown context,
 large token values, absent cost, and Discord rendering before deployment.
+
+#### Discord account cleanup
+
+Remove the unused `channels.discord.accounts.default` entry during the same
+stopped-Gateway configuration window. Before removal, revalidate that every
+Discord binding selects `accountId="vigil"`, `vigil` remains enabled with the
+only Discord credential, and no guild or channel mapping is owned by
+`default`. After restart, verify exactly one Discord provider initializes,
+all configured channels resolve through `vigil`, and an ordinary Discord
+round trip succeeds.
 
 #### iOS device pairing
 
@@ -872,6 +916,206 @@ Do not weaken Gateway authentication, device approval, or transport security
 to make pairing work. Same-LAN pairing may use the existing authenticated LAN
 Gateway; remote pairing must use the supported secure `wss://` or Tailscale
 Serve path.
+
+#### Discord live voice through Vigil Main
+
+Enable Discord voice as a configuration-only addition after confirming the
+active `openai/oauth` profile can create an OpenAI Realtime session. Use:
+
+```json5
+{
+  channels: {
+    discord: {
+      voice: {
+        enabled: true,
+        mode: "agent-proxy",
+        followUsersEnabled: true,
+        followUsers: ["252573430216523777"],
+        agentSession: {
+          mode: "target",
+          target: "channel:1476422186544795659",
+        },
+        realtime: {
+          provider: "openai",
+          model: "gpt-realtime-2.1",
+          consultPolicy: "always",
+          requireWakeName: true,
+          wakeNames: ["Vigil"],
+        },
+      },
+    },
+  },
+}
+```
+
+Preserve `channel:1476422186544795659` as the existing canonical Vigil Main
+binding and `252573430216523777` as its existing Discord owner identity; do not
+create a new session or change either identity. Do not configure `autoJoin`.
+Vigil must join only when that owner enters or moves between voice channels,
+and must leave when the owner disconnects.
+
+The OpenAI Realtime model owns audio capture, turn timing, wake-name handling,
+barge-in, and speech playback. Every substantive turn is consulted through the
+existing Vigil Main OpenClaw session, whose normal model remains GPT-5.6 Sol.
+Completed tools, LCM context, redirects, and transcript finalization remain
+owned by that same session. Voice input arriving while Main is busy must enter
+the existing redirect/queue lifecycle; it must not start a competing turn.
+
+Validation:
+
+- config validates without adding an OpenAI API key or changing model routing;
+- Gateway starts and ordinary text Discord behavior is unchanged before any
+  voice join;
+- the configured owner entering a voice channel establishes one voice session
+  using the existing OAuth profile without requiring `/vc join`;
+- a substantive spoken request invokes Vigil Main on GPT-5.6 Sol and returns
+  the answer through voice;
+- wake-name gating ignores unrelated room speech;
+- simultaneous text and voice input preserves one Main-session owner and
+  consumes each correction exactly once;
+- moving voice channels moves Vigil once; owner disconnect closes voice
+  resources; Gateway restart reconciles current owner voice state without
+  changing the Main session or leaving a stale active run;
+- OAuth entitlement failure is reported clearly and does not fall back to a
+  separately billed API credential.
+
+#### Image and video generation through existing OAuth
+
+Configure `agents.defaults.imageGenerationModel.primary` as
+`openai/gpt-image-2`. The bundled OpenAI provider has an explicit Codex OAuth
+Responses transport for image generation, so this must use the existing
+OpenAI OAuth profile and must not add an OpenAI API key.
+
+OpenClaw also exposes `xai/grok-imagine-image`,
+`xai/grok-imagine-image-quality`, and `xai/grok-imagine-video`. xAI's official
+Grok Build source proves that both personal OAuth sessions and BYOK sessions
+send Bearer credentials directly to the public
+`https://api.x.ai/v1/images/generations` and
+`https://api.x.ai/v1/videos/generations` endpoints. The client refreshes the
+OAuth bearer per request and applies subscription-tier gates separately from
+authentication. OpenClaw's xAI provider already resolves its OAuth profile to
+the same Bearer shape and targets those same endpoints.
+
+Configure `xai/grok-imagine-image-quality` as the image-generation fallback and
+`xai/grok-imagine-video` as the video-generation primary. Then:
+
+1. Run one low-cost xAI image canary using the existing OAuth profile.
+2. Run one minimum-duration/lowest-resolution xAI video canary using the same
+   OAuth profile.
+3. Treat a tier/limit rejection as an account-entitlement result, not evidence
+   that OAuth transport is unsupported.
+4. If either capability is unavailable to the current subscription, remove
+   only that default. Do not add an API key, billing account, or silent
+   provider fallback.
+
+Receiving and analyzing user-supplied images is separate from image
+generation. GPT-5.6 already accepts image input in the current model
+configuration, so this settings batch must not alter that path.
+
+Deployment verification on 2026-07-26:
+
+- configuration validation and exact readback passed;
+- only the `vigil` Discord account remains configured and exactly that provider
+  initialized after restart;
+- the OpenAI realtime/image/video and xAI image/video capabilities loaded;
+- the configured Discord voice channel reports no missing bot permissions;
+- Gateway health passed with event-loop p99 at 21 ms after startup settled;
+- follow-user reconciliation ran and correctly found no active owner voice
+  state while the owner was disconnected;
+- spoken voice and provider-generating image/video canaries remain pending
+  because they require owner participation or provider usage.
+
+#### Deferred managed TaskFlow orchestration
+
+TaskFlow core storage is already active and automatically creates
+`task_mirrored` flows for detached subagent and ACP work. Vigil cannot currently
+drive a managed multi-step flow intentionally: the bundled `taskflow` skill is
+blocked by the installation skill allowlist, and the bundled `lobster`
+controller plugin is disabled and not allowlisted.
+
+In a later stopped-Gateway configuration window:
+
+1. Add only the bundled `taskflow` skill to the approved skill surface for
+   Vigil/Main.
+2. Allow and enable the bundled `lobster` plugin so an agent-owned controller
+   can call the managed TaskFlow runtime; do not expose it globally until the
+   Main canary passes.
+3. Keep `taskflow-inbox-triage` disabled unless that specific example workflow
+   is requested.
+4. Validate one disposable managed flow with parallel child tasks, a waiting
+   state, `sessions_yield`, resume, completion, and cancellation.
+5. Restart the Gateway during a disposable waiting flow and prove that the
+   owner, revision, state, linked tasks, and exactly-once completion delivery
+   survive.
+6. Verify Discord receives one final result, child thread routing remains
+   unchanged, existing mirrored subagent flows still work, and no hook or
+   polling loop is introduced.
+7. Audit and reconcile stale TaskFlow rows through supported
+   `openclaw tasks flow` and `openclaw tasks maintenance` commands only; never
+   edit TaskFlow tables directly.
+
+This is an additive orchestration capability, not a replacement for
+`sessions_spawn` or `sessions_yield`. Use lightweight yield orchestration for
+ordinary live fan-out, and managed TaskFlow only when work must retain explicit
+multi-stage state across turns or Gateway restarts.
+
+#### Correct one-shot threaded-subagent completion routing
+
+Status: implemented and locally verified on 2026-07-26.
+
+The individual contracts remain intentional:
+
+- `thread=true, mode="session"` delivers the child response directly in its
+  persistent thread and does not wake the requester;
+- `thread=true, mode="run"` creates a one-shot child thread and, when
+  `expectsCompletionMessage` is true, returns completion to the requester;
+- `sessions_yield` ends the requester turn so that completion can wake it;
+- a requester that genuinely originated inside a thread must continue in that
+  requester thread.
+
+The observed composition violates those contracts. Main originated from the
+canonical Discord channel session
+`agent:main:discord:channel:1476422186544795659`. After a one-shot integration
+child completed, Main woke successfully, but its delivery context inherited
+the completed child's thread id. Main's continuation was published in the
+child thread, and its next `thread=true` spawn attempted an invalid nested
+Discord thread. Retrying with another `agentId` failed identically because the
+route, not the agent, was wrong.
+
+The implemented fix keeps the two routes separate without adding a mode,
+configuration key, or model-facing parameter:
+
+- core completion routing now lets the owning channel resolve the completion
+  route before using the generic child-binding fallback;
+- Discord returns the requester's original channel/account/target/thread for
+  one-shot `mode="run"` completion control;
+- Discord's existing bound-subagent stream relay continues to present and
+  finalize the child's output in the child thread;
+- persistent `mode="session"` completion routing still resolves to the bound
+  child destination;
+- channels without an overriding completion route retain the generic binding
+  fallback.
+
+This preserves the strict requester/child ownership boundary and avoids the
+temporary child-to-parent CLI invocation workaround. No configuration or
+doctor migration is required.
+
+Changed surface:
+
+- `src/agents/subagent-announce-delivery.ts`;
+- `src/agents/subagent-announce-delivery.test.ts`;
+- `extensions/discord/src/subagent-hooks.ts`;
+- `extensions/discord/src/subagent-hooks.test.ts`.
+
+Proof:
+
+- core regression coverage proves a channel-owned requester route wins before
+  the child binding fallback;
+- Discord coverage proves `mode="run"` resumes the requester without consulting
+  the child binding and `mode="session"` still uses the child thread;
+- Discord streaming coverage proves successful child output remains finalized
+  in its bound thread;
+- the surrounding 79-test subagent announcement E2E suite remains green.
 
 ### Rebase-skill maintenance
 
@@ -2221,9 +2465,16 @@ phases, but each deployment must retain a clean rollback point.
     removal of duplicate primary-model fallback entries and replacement of
     Brave/Perplexity search plus direct fetch with the bundled Firecrawl
     provider. Add and enable the bundled `device-pair` plugin without changing
-    Discord or Gateway authentication behavior, then validate the canonical
-    config shape. Keep the Gateway stopped while any requested setting remains
-    unspecified or under discussion.
+    Discord or Gateway authentication behavior. Replace the emoji-heavy usage
+    footer with the approved plain-text form, remove aliases for unused models,
+    remove only the unreferenced Discord `default` account while preserving
+    `vigil`, and enable owner-following Discord `agent-proxy` voice targeting
+    Vigil Main through the existing OpenAI OAuth profile with
+    `consultPolicy="always"`. Configure `openai/gpt-image-2` through Codex
+    OAuth, `xai/grok-imagine-image-quality` as its image fallback, and
+    `xai/grok-imagine-video` as the video primary through xAI OAuth. Then
+    validate the canonical config shape. Keep the Gateway stopped while any
+    requested setting remains unspecified or under discussion.
 16. Obtain Shariq's explicit confirmation that the settings list is complete.
 17. Start the Gateway through the OpenClaw Gateway CLI unless that command
     fails and the fallback is recorded.
@@ -2243,30 +2494,38 @@ phases, but each deployment must retain a clean rollback point.
 23. Verify the interactive TUI follows the same global redirect policy.
 24. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
 25. Verify a Discord message round trip.
-26. Verify `/new`.
-27. Verify manual `/compact`, stateful automatic recovery, and stateless
+26. Verify Discord voice remains idle while the owner is absent, joins when the
+    owner enters the configured voice channel, follows one channel move, handles
+    one wake-name-gated spoken request through Vigil Main on GPT-5.6 Sol, speaks
+    the answer once, and leaves when the owner disconnects without affecting
+    text.
+27. Verify OpenAI image generation through Codex OAuth. Separately canary xAI
+    OAuth image and then minimum-cost video generation; if account entitlement
+    rejects either capability, remove only its configured default.
+28. Verify `/new`.
+29. Verify manual `/compact`, stateful automatic recovery, and stateless
     subagent native fallback.
-28. Verify active-subagent steering, cancellation, follow-up-after-finalization,
+30. Verify active-subagent steering, cancellation, follow-up-after-finalization,
     and absence of duplicate finals or takeover errors.
-29. Verify the exec schema advertises only live session capabilities and that
+31. Verify the exec schema advertises only live session capabilities and that
     explicit unavailable hosts still fail safely.
-30. Verify model-call idle and WebSocket recovery uses one bounded retry,
+32. Verify model-call idle and WebSocket recovery uses one bounded retry,
     preserves completed tools, and surfaces an exhausted failure visibly.
-31. Verify Firecrawl is the only configured web-search provider, performs one
+33. Verify Firecrawl is the only configured web-search provider, performs one
     safe search and one safe fetch successfully, and does not expose its
     credential.
-32. Verify existing sessions, cron delivery, subagent execution, restart
+34. Verify existing sessions, cron delivery, subagent execution, restart
     recovery, and absence of runtime JSON fallback.
-33. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
+35. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
     block-write, and LCM metrics during normal load.
-34. For Batch 5, keep the superseded completion watcher, janitor, and weekly
+36. For Batch 5, keep the superseded completion watcher, janitor, and weekly
     timer disabled; run one disposable cron lifecycle canary, copied-fixture
     stale recovery, and production `lcm maintain` dry-run. For deployments
     before Batch 5, resume only the helpers recorded active in the baseline.
-35. Verify the lifecycle canary archives only its exact conversation, produces
+37. Verify the lifecycle canary archives only its exact conversation, produces
     one acknowledged receipt, survives duplicate delivery, and leaves active
     Discord/non-cron counts unchanged.
-36. Update the global rebase skill with final commit hashes and any durable
+38. Update the global rebase skill with final commit hashes and any durable
     workflow facts learned from deployment, then verify its complete readback
     before final handoff.
 
@@ -2395,9 +2654,17 @@ The current implementation batch is complete when:
   channel streaming mode without transcript changes, stale drafts, replayed
   tools, or duplicate finals;
 - `/usage full` preserves its complete summary while showing numeric
-  used/max/percent context through the supported template configuration;
+  used/max/percent context through the supported template configuration, with
+  no decorative identity, reasoning, speed, context, or cost emoji and no
+  aliases for models outside GPT-5.6 Sol/Terra/Luna and Grok 4.5;
+- Discord initializes only the configured `vigil` account after the unused
+  unreferenced `default` account is removed, with bindings and channel delivery
+  unchanged;
 - the bundled `device-pair` plugin provides `/pair qr` for iOS setup without
   changing Discord, session, queue, LCM, or Gateway authentication behavior;
+- Vigil can create, wait, resume, finish, fail, and cancel a disposable managed
+  TaskFlow through the approved controller while ordinary mirrored subagent
+  flows and `sessions_yield` behavior remain unchanged;
 - exact post-persist cron lifecycle events archive one matching LCM
   conversation across success, error, timeout, delivery failure, duplicate,
   overlap, and restart cases;
