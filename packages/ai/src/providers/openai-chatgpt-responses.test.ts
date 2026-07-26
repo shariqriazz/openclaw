@@ -721,7 +721,7 @@ describe("streamOpenAICodexResponses transport", () => {
         unsupportedToolSchemaKeywords: ["not"],
         omitEmptyArrayItems: true,
       },
-    } satisfies Model<"openai-chatgpt-responses">;
+    } as unknown as Model<"openai-chatgpt-responses">;
 
     const stream = streamOpenAICodexResponses(
       compatModel,

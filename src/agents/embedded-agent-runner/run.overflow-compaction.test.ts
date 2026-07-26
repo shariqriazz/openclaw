@@ -2273,7 +2273,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
 
     expect(mockedCompactDirect).toHaveBeenCalledTimes(3);
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(4);
-    expect(result.payloads[0]?.text).toContain("Context overflow");
+    expect(result.payloads?.[0]?.text).toContain("Context overflow");
   });
 
   it("runs OpenAI server compaction after stateful engine overflow recovery", async () => {
@@ -2329,6 +2329,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       ok: true,
       compacted: true,
       result: {
+        summary: "unchanged",
         tokensBefore: 278_459,
         tokensAfter: 278_459,
       },

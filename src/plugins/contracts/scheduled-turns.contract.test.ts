@@ -89,6 +89,7 @@ function createMockCronService(): CronServiceContract {
   return {
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
+    stopGraceful: vi.fn(async () => undefined),
     status: vi.fn(async () => ({
       enabled: true,
       storePath: "/tmp/openclaw-test-cron.json",
@@ -99,6 +100,8 @@ function createMockCronService(): CronServiceContract {
     })),
     list: vi.fn(async () => []),
     listPage: workflowMocks.cronListPage,
+    listActiveRuns: vi.fn(() => []),
+    listFinishedRuns: vi.fn(() => []),
     add: workflowMocks.cronAdd,
     update: vi.fn(async (id, patch) => makeCronJob({ id, ...patch })),
     updateWithPrecondition: vi.fn(async (id, patch, precondition) => {

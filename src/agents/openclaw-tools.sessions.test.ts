@@ -1590,7 +1590,7 @@ describe("sessions tools", () => {
   it("sessions_send reports source reply delivery mode mismatch without durable-session fallback", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     const runScopedCallerKey = "agent:leasing-ops:cron:monthly-utility:run:run-fast";
-    const queueMessage = vi.fn(async () => {});
+    const queueMessage = vi.fn(async (_text: string, _options?: unknown) => {});
     setActiveEmbeddedRun(
       "caller-active-session",
       {
@@ -1646,7 +1646,7 @@ describe("sessions tools", () => {
   it("sessions_send joins an ordinary persistent target's active run", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     const ordinaryActiveKey = "agent:main:main";
-    const queueMessage = vi.fn(async () => {});
+    const queueMessage = vi.fn(async (_text: string, _options?: unknown) => {});
     setActiveEmbeddedRun(
       "ordinary-active-session",
       {

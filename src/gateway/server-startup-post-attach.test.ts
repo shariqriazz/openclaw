@@ -2213,9 +2213,30 @@ describe("startGatewayPostAttachRuntime", () => {
       hasHooks: vi.fn((hookName: string) => hookName === "gateway_start"),
       runGatewayStart,
     };
-    const depsCron = { list: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn() };
-    const liveCron = { list: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn() };
-    const reloadedCron = { list: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn() };
+    const depsCron = {
+      list: vi.fn(),
+      listActiveRuns: vi.fn(() => []),
+      listFinishedRuns: vi.fn(() => []),
+      add: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+    };
+    const liveCron = {
+      list: vi.fn(),
+      listActiveRuns: vi.fn(() => []),
+      listFinishedRuns: vi.fn(() => []),
+      add: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+    };
+    const reloadedCron = {
+      list: vi.fn(),
+      listActiveRuns: vi.fn(() => []),
+      listFinishedRuns: vi.fn(() => []),
+      add: vi.fn(),
+      update: vi.fn(),
+      remove: vi.fn(),
+    };
     let currentLiveCron = liveCron;
     const params = createPostAttachParams({
       deps: { cron: depsCron } as never,

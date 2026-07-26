@@ -262,6 +262,8 @@ describe("handleCompactCommand", () => {
       compacted: false,
       reason: "already under target",
       result: {
+        summary: "unchanged",
+        firstKeptEntryId: "entry-1",
         tokensBefore: 39_286,
         tokensAfter: 39_286,
       },

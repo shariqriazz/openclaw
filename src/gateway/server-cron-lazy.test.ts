@@ -190,6 +190,8 @@ function createCronService(): CronServiceContract {
     status: vi.fn(async () => ({ enabled: true }) as never),
     list: vi.fn(async () => [] as never),
     listPage: vi.fn(async () => ({ items: [], total: 0 }) as never),
+    listActiveRuns: vi.fn(() => []),
+    listFinishedRuns: vi.fn(() => []),
     add: vi.fn(async () => ({ ok: true }) as never),
     update: vi.fn(async () => ({ ok: true }) as never),
     updateWithPrecondition: vi.fn(async () => ({ ok: true }) as never),

@@ -379,7 +379,9 @@ describe("SessionManager.open", () => {
     await fs.writeFile(sessionFile, initialTranscriptWithContent(filler), "utf8");
 
     const sessionManager = SessionManager.open(sessionFile, dir, dir);
-    const publishSessionFileSnapshot = vi.fn(() => true);
+    const publishSessionFileSnapshot = vi.fn(
+      (_snapshot: unknown, _publishedEntries?: readonly unknown[]) => true,
+    );
     await withOwnedSessionTranscriptWrites(
       {
         sessionFile,

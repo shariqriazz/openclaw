@@ -74,7 +74,7 @@ function openStreamResponse(params: { chunks?: string[]; onCancel?: () => void }
 
 describe("OpenAI server compaction", () => {
   it("requests a compaction artifact through the existing Responses endpoint", async () => {
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
       const events = [
         {
           type: "response.output_item.done",
@@ -385,7 +385,7 @@ describe("OpenAI server compaction", () => {
   });
 
   it("compacts from prior opaque history instead of the portable summary", async () => {
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
       const events = [
         {
           type: "response.output_item.done",
@@ -439,7 +439,7 @@ describe("OpenAI server compaction", () => {
   });
 
   it("preserves ChatGPT store-disabled replay safeguards", async () => {
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
       const events = [
         {
           type: "response.output_item.done",

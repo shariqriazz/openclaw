@@ -895,6 +895,7 @@ describe("buildContextOverflowRecoveryText", () => {
           overflowTokens: 537,
           toolResultReducibleChars: 0,
           messageCount: 103,
+          unwindowedMessageCount: 103,
         },
       },
     });

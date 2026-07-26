@@ -43,6 +43,7 @@ type MockCompactionResult =
       ok: false;
       compacted: false;
       reason: string;
+      reassembleRequired?: boolean;
       result?: undefined;
     }
   | {

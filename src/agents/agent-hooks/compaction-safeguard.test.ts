@@ -193,19 +193,23 @@ async function runCompactionScenario(params: {
   return { result, getApiKeyAndHeadersMock };
 }
 
-function expectCompactionResult(result: {
-  cancel?: boolean;
-  compaction?: {
+function expectCompactionResult(result: unknown): {
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  details?: unknown;
+} {
+  const resultRecord = requireRecord(result);
+  expect(resultRecord.cancel).not.toBe(true);
+  if (!resultRecord.compaction) {
+    throw new Error("Expected compaction result");
+  }
+  return resultRecord.compaction as {
     summary: string;
     firstKeptEntryId: string;
     tokensBefore: number;
+    details?: unknown;
   };
-}) {
-  expect(result.cancel).not.toBe(true);
-  if (!result.compaction) {
-    throw new Error("Expected compaction result");
-  }
-  return result.compaction;
 }
 
 function mockCallArg(
@@ -2758,7 +2762,7 @@ describe("OpenAI server compaction ownership", () => {
 
     const compaction = expectCompactionResult(result);
     expect(compaction.summary).toBe("summary from LCM");
-    expect(compaction.details).toEqual(
+    expect(requireRecord(compaction.details)).toEqual(
       expect.objectContaining({
         remoteCompaction: expect.objectContaining({
           provider: "openai-responses-compaction",
@@ -2817,7 +2821,7 @@ describe("OpenAI server compaction ownership", () => {
 
     const compaction = expectCompactionResult(result);
     expect(compaction.summary).toBe("summary from LCM");
-    expect(compaction.details).not.toHaveProperty("remoteCompaction");
+    expect(requireRecord(compaction.details)).not.toHaveProperty("remoteCompaction");
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
   });
 
