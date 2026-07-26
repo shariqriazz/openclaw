@@ -190,6 +190,11 @@ export type CronRunOutcome = {
   /** Optional classifier for execution errors to guide fallback behavior. */
   errorKind?: "delivery-target";
   summary?: string;
+  /**
+   * Stable context-engine identity for the run. Compaction may adopt a newer
+   * sessionId while the run-scoped sessionKey remains bound to this identity.
+   */
+  contextSessionId?: string;
   sessionId?: string;
   sessionKey?: string;
   diagnostics?: CronRunDiagnostics;

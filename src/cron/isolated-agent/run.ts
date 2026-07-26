@@ -666,6 +666,7 @@ async function prepareCronRunContext(params: {
   });
   const withRunSession: WithRunSession = (result) => ({
     ...result,
+    contextSessionId: runSessionId,
     sessionId: currentRunSessionId(),
     sessionKey: runSessionKey,
   });

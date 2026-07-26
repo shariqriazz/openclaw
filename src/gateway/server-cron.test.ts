@@ -8,9 +8,13 @@ import type { OpenClawConfig } from "../config/config.js";
 import { readCronRunLogEntriesSync } from "../cron/run-log.js";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
 
-type RunCronIsolatedAgentTurnMock = (params: {
-  abortSignal?: AbortSignal;
-}) => Promise<{ status: "ok"; summary: string }>;
+type RunCronIsolatedAgentTurnMock = (params: { abortSignal?: AbortSignal }) => Promise<{
+  status: "ok";
+  summary: string;
+  contextSessionId?: string;
+  sessionId?: string;
+  sessionKey?: string;
+}>;
 
 const {
   enqueueSystemEventMock,
@@ -828,6 +832,13 @@ describe("buildGatewayCronService", () => {
         wakeMode: "next-heartbeat",
         payload: { kind: "agentTurn", message: "report" },
       });
+      runCronIsolatedAgentTurnMock.mockResolvedValueOnce({
+        status: "ok",
+        summary: "ok",
+        contextSessionId: "context-session-id",
+        sessionId: "adopted-session-id",
+        sessionKey: `agent:main:cron:${job.id}:run:context-session-id`,
+      });
 
       let observedPersistedRun = false;
       runCronChangedMock.mockImplementation(async (event: unknown) => {
@@ -850,6 +861,10 @@ describe("buildGatewayCronService", () => {
 
       await state.cron.run(job.id, "force");
       await vi.waitFor(() => expect(observedPersistedRun).toBe(true));
+      const finishedEvent = runCronChangedMock.mock.calls
+        .map(([event]) => requireRecord(event, "cron_changed event"))
+        .find((event) => event.action === "finished");
+      expect(finishedEvent?.sessionId).toBe("context-session-id");
     } finally {
       state.cron.stop();
     }
