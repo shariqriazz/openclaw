@@ -1,8 +1,9 @@
 # Gateway Reliability and Persistence Performance Plan
 
 - Status: correctness Batches 1-5 and performance Phases 0-1.5 implemented,
-  validated, and locally deployed; post-deployment evidence keeps the gated
-  Phase 2 session-store investigation open
+  validated, and locally deployed; model-call transport recovery is pending,
+  and post-deployment evidence keeps the gated Phase 2 session-store
+  investigation open
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -34,7 +35,10 @@ commits, validation gates, deployment steps, and rollback points:
 10. Replace the external LCM completion watcher and stale janitor with exact,
     native cron lifecycle handling, and move provider-neutral weekly storage
     maintenance into a typed `lcm maintain` command.
-11. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
+11. Recover retryable model-call stalls without replaying completed tools,
+    derive fallback availability from distinct effective candidates, and
+    always surface terminal channel failures.
+12. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
     patch histories, protected behavior, validation commands, and deployment
     lessons before final handoff.
 
@@ -50,6 +54,33 @@ non-production environment that cannot touch live sessions, databases, config,
 Discord, cron state, or the active extension. Stop the production Gateway and
 freeze live writers before changing the active checkout or building artifacts
 served by production.
+
+### Immediate maintenance checkpoint
+
+The audit workload settled and the Gateway was stopped through the supported
+OpenClaw CLI before source, build, or configuration changes.
+
+Approved `openclaw.json` changes:
+
+- replace Brave and Perplexity as configured web-search providers with the
+  bundled Firecrawl plugin, and use the same plugin for `web_fetch`;
+- set `tools.web.search.provider` to `firecrawl`;
+- set `tools.web.fetch.provider` to `firecrawl`;
+- remove Brave and Perplexity from `plugins.allow` and remove their enabled
+  plugin entries and provider credential configuration;
+- add `firecrawl` to `plugins.allow`;
+- enable `plugins.entries.firecrawl`;
+- configure hosted Firecrawl search and fetch under
+  `plugins.entries.firecrawl.config.webSearch` and `webFetch`, reusing the
+  supplied credential without placing it in this repository, this plan, logs,
+  or command output;
+- validate after config application that Firecrawl is allowed, enabled, loaded,
+  and selected for both `web_search` and `web_fetch`, while Brave and
+  Perplexity are no longer configured or exposed.
+- remove duplicate fallback entries that point to the primary model;
+- raise `agents.defaults.subagents.maxChildrenPerAgent` from 20 to 30 while
+  retaining the process-wide `agents.defaults.subagents.maxConcurrent=50`
+  ceiling so one parent cannot consume every available slot.
 
 This means:
 
@@ -763,11 +794,64 @@ filtering, or approved persistence behavior detectable before deployment.
 
 ### Provider and network failures
 
-Do not change retry or fallback behavior in this program. Current evidence
-shows bounded classification and later recovery without configuration changes,
-which is consistent with external provider failures. A retry change requires
-separate proof of a local defect and replay safety after possible tool side
-effects.
+New production evidence proves a narrow local recovery defect even though the
+underlying stalls are provider/transport failures.
+
+At `2026-07-26T03:31:10Z`, Main's model request produced no further stream
+progress for 120 seconds and ended with:
+
+```text
+LLM idle timeout (120s): no response from model
+```
+
+The turn had no visible Discord failure reply. The configured model list
+contained the primary plus five identical fallback references. Candidate
+collection correctly deduplicated them to one effective model, but the raw
+presence of configured fallbacks set `fallbackConfigured=true` earlier and
+disabled the existing bounded same-model idle retry. The fallback runner then
+had only one distinct candidate and nothing to try.
+
+During the subsequent 20-child audit burst, three unrelated audits
+(`audit-docx`, `audit-auth`, and `audit-ghl-auth`) terminated with the identical
+raw `WebSocket error`. Other audits completed under the same source and model.
+The OpenAI transport already records a failed WebSocket and selects SSE for a
+future request, but when the socket has emitted an initial event the current
+model call fails. The runner then refuses whole-run replay after completed
+tools, correctly reporting `replaySafe=no`. Historical logs contain the same
+WebSocket failure before this maintenance series, so the transport failure was
+not introduced by the current fork patches.
+
+Implement model-call recovery, not whole-turn replay:
+
+- derive `fallbackConfigured` from the distinct effective candidate list after
+  primary-equivalent entries are removed;
+- keep the existing one-retry bound for a silent same-model request;
+- after a WebSocket transport failure, retry the current model call once over
+  SSE only when no assistant text, reasoning result, or tool invocation from
+  that call has been durably adopted;
+- retain every completed tool result exactly once and never rerun the agent
+  turn or an earlier tool merely because transport failed;
+- if any tool invocation or ambiguous assistant output from the failed call was
+  adopted, fail closed rather than replaying it;
+- preserve cancellation, run deadlines, profile rotation, rate-limit handling,
+  and distinct-model fallback ordering;
+- after bounded recovery is exhausted, send a visible channel error instead of
+  dispatching an empty reply and leaving the user to guess whether the task is
+  still running;
+- remove duplicate primary-model fallback entries from this installation's
+  `openclaw.json` during the later approved config update.
+
+Focused tests must cover:
+
+- duplicate primary fallbacks do not suppress the one same-model idle retry;
+- genuinely distinct fallback models retain their configured order;
+- a silent model call retries once without replaying prior tool results;
+- a pre-output WebSocket failure retries once through SSE;
+- a post-tool-call or ambiguous-output WebSocket failure does not replay;
+- cancellation and run-budget expiry do not trigger recovery;
+- exhausted recovery produces one visible Discord error;
+- twenty concurrent model calls can mix success and transport failure without
+  duplicating tools, transcript entries, or finals.
 
 ## Problem
 
@@ -2001,35 +2085,47 @@ phases, but each deployment must retain a clean rollback point.
 14. After code and config validation, explicitly set this installation's
     global `messages.queue.mode` to `redirect`. Do not add a `webchat` override
     unless the TUI routing test proves that surface.
-15. Start the Gateway through the OpenClaw Gateway CLI unless that command
+15. Apply Shariq's complete approved `openclaw.json` settings batch, including
+    removal of duplicate primary-model fallback entries and replacement of
+    Brave/Perplexity search plus direct fetch with the bundled Firecrawl
+    provider, then validate the canonical config shape. Keep the Gateway
+    stopped while any requested setting remains unspecified or under
+    discussion.
+16. Obtain Shariq's explicit confirmation that the settings list is complete.
+17. Start the Gateway through the OpenClaw Gateway CLI unless that command
     fails and the fallback is recorded.
-16. Wait at least 30 seconds.
-17. Run `openclaw health`.
-18. Verify an ordinary Discord correction during model generation redirects
+18. Wait at least 30 seconds.
+19. Run `openclaw health`.
+20. Verify an ordinary Discord correction during model generation redirects
     the same logical turn, and a correction during tool execution waits for a
     safe boundary.
-19. Verify the interactive TUI follows the same global redirect policy.
-20. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
-21. Verify a Discord message round trip.
-22. Verify `/new`.
-23. Verify manual `/compact`, stateful automatic recovery, and stateless
+21. Verify the interactive TUI follows the same global redirect policy.
+22. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
+23. Verify a Discord message round trip.
+24. Verify `/new`.
+25. Verify manual `/compact`, stateful automatic recovery, and stateless
     subagent native fallback.
-24. Verify active-subagent steering, cancellation, follow-up-after-finalization,
+26. Verify active-subagent steering, cancellation, follow-up-after-finalization,
     and absence of duplicate finals or takeover errors.
-25. Verify the exec schema advertises only live session capabilities and that
+27. Verify the exec schema advertises only live session capabilities and that
     explicit unavailable hosts still fail safely.
-26. Verify existing sessions, cron delivery, subagent execution, restart
+28. Verify model-call idle and WebSocket recovery uses one bounded retry,
+    preserves completed tools, and surfaces an exhausted failure visibly.
+29. Verify Firecrawl is the only configured web-search provider, performs one
+    safe search and one safe fetch successfully, and does not expose its
+    credential.
+30. Verify existing sessions, cron delivery, subagent execution, restart
     recovery, and absence of runtime JSON fallback.
-27. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
+31. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
     block-write, and LCM metrics during normal load.
-28. For Batch 5, keep the superseded completion watcher, janitor, and weekly
+32. For Batch 5, keep the superseded completion watcher, janitor, and weekly
     timer disabled; run one disposable cron lifecycle canary, copied-fixture
     stale recovery, and production `lcm maintain` dry-run. For deployments
     before Batch 5, resume only the helpers recorded active in the baseline.
-29. Verify the lifecycle canary archives only its exact conversation, produces
+33. Verify the lifecycle canary archives only its exact conversation, produces
     one acknowledged receipt, survives duplicate delivery, and leaves active
     Discord/non-cron counts unchanged.
-30. Update the global rebase skill with final commit hashes and any durable
+34. Update the global rebase skill with final commit hashes and any durable
     workflow facts learned from deployment, then verify its complete readback
     before final handoff.
 
@@ -2148,8 +2244,12 @@ The current implementation batch is complete when:
 - Lossless Claw production artifacts identify a clean committed fork revision;
 - exec schemas advertise only session-available hosts while runtime enforcement
   remains authoritative;
-- provider/network retry behavior remains unchanged unless separately proven
-  defective;
+- duplicate primary fallbacks cannot suppress bounded same-model idle recovery;
+- retryable no-output WebSocket failures recover once over SSE without
+  replaying completed tools, while ambiguous post-output failures fail closed;
+- exhausted model-call recovery produces one visible channel error;
+- Firecrawl is the configured provider for both web search and web fetch, while
+  its credential remains outside Git and diagnostic output;
 - exact post-persist cron lifecycle events archive one matching LCM
   conversation across success, error, timeout, delivery failure, duplicate,
   overlap, and restart cases;
