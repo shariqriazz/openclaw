@@ -4,8 +4,9 @@
   validated, and locally deployed; model-call transport recovery is
   implemented, focused-tested, and built with its live canary pending, while
   post-deployment evidence keeps the gated Phase 2 session-store investigation
-  open; Discord thread-bound subagent streaming and numeric `/usage full`
-  context reporting are planned but not yet implemented or configured
+  open; Discord thread-bound subagent streaming is implemented and
+  focused-tested, while its production configuration, numeric `/usage full`
+  context reporting, and device pairing await the coordinated deployment
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -773,9 +774,12 @@ bypasses the inbound Discord handler that owns partial, block, and progress
 drafts. Configured streaming modes therefore do not currently affect those
 subagent threads.
 
-Add one channel-owned presentation seam to direct agent delivery. A
-thread-bound subagent must resolve and honor the same effective configured
-mode as its target channel/account:
+The implemented seam remains channel-owned: the Discord plugin subscribes to
+the host's sanitized agent-event stream, correlates events to exactly one
+Discord thread binding by child session key, and feeds the existing Discord
+draft compositor. It never creates another model turn, transcript writer, or
+delivery path. A thread-bound subagent resolves and honors the same effective
+configured mode as its target channel/account:
 
 - `off`: final delivery only;
 - `partial`: the channel's existing partial-response behavior;
@@ -797,19 +801,24 @@ replaying a tool, changing the child transcript, or duplicating the final.
 Cancellation, Gateway restart, and finalization races must not leave a stale
 draft. Concurrent child threads must remain isolated.
 
-Keep core delivery channel-neutral. The generic delivery contract carries the
-effective streaming mode and bounded progress events; Discord maps them
-through its existing compositor. Other channels may opt into the same
-contract without importing Discord policy into core.
+Keep core delivery channel-neutral. The existing sanitized agent-event
+subscription contract carries bounded progress events; Discord maps them
+through its existing compositor and exact thread-binding registry. Other
+channels may opt into that public contract without importing Discord policy
+into core.
 
-Likely implementation surface:
+Implemented surface:
 
-- `src/agents/subagent-spawn.ts` and the direct Gateway agent-delivery
-  contract;
-- the shared channel streaming/presentation boundary;
-- `extensions/discord/src/monitor/message-handler.draft-preview.ts` or a
-  reusable Discord compositor entry point;
-- focused Gateway, subagent-delivery, and Discord adapter tests.
+- `extensions/discord/subagent-hooks-api.ts`;
+- `extensions/discord/src/subagent-streaming.ts`;
+- `extensions/discord/src/subagent-streaming.test.ts`;
+- the existing Discord subagent-hook and draft-delivery regression suites.
+
+The same validation pass found and fixed a separate canonical-event mismatch
+in `extensions/discord/src/monitor/message-run-queue.ts`: active reply
+admission compared against the retired `"message"` event name instead of
+`"user_request"`. Without that fix, an ordinary busy correction could remain
+serialized behind the active reply rather than reaching redirect handling.
 
 Required tests:
 
@@ -846,6 +855,22 @@ this installation. Preserve session-level `/usage` override precedence:
 explicit `/usage off` remains off until `/usage reset`; configuration must not
 silently overwrite a persisted session choice. Validate zero/unknown context,
 large token values, absent cost, and Discord rendering before deployment.
+
+#### iOS device pairing
+
+Enable the bundled `device-pair` plugin for this installation by adding
+`device-pair` to `plugins.allow` and enabling
+`plugins.entries.device-pair`. This is an additive command surface for mobile
+node setup and approval; it must not change Discord routing, agent sessions,
+queue behavior, LCM ownership, or existing channel pairing.
+
+After the next planned Gateway restart, verify that `/pair qr` produces the
+supported short-lived iOS setup flow, the resulting request is exact
+device-role pairing, and normal Discord messages still round-trip unchanged.
+Do not weaken Gateway authentication, device approval, or transport security
+to make pairing work. Same-LAN pairing may use the existing authenticated LAN
+Gateway; remote pairing must use the supported secure `wss://` or Tailscale
+Serve path.
 
 ### Rebase-skill maintenance
 
@@ -2194,9 +2219,10 @@ phases, but each deployment must retain a clean rollback point.
 15. Apply Shariq's complete approved `openclaw.json` settings batch, including
     removal of duplicate primary-model fallback entries and replacement of
     Brave/Perplexity search plus direct fetch with the bundled Firecrawl
-    provider, then validate the canonical config shape. Keep the Gateway
-    stopped while any requested setting remains unspecified or under
-    discussion.
+    provider. Add and enable the bundled `device-pair` plugin without changing
+    Discord or Gateway authentication behavior, then validate the canonical
+    config shape. Keep the Gateway stopped while any requested setting remains
+    unspecified or under discussion.
 16. Obtain Shariq's explicit confirmation that the settings list is complete.
 17. Start the Gateway through the OpenClaw Gateway CLI unless that command
     fails and the fallback is recorded.
@@ -2211,6 +2237,8 @@ phases, but each deployment must retain a clean rollback point.
     correct channel or thread.
 22. Verify `/usage full` retains all full-summary fields and renders numeric
     context as used/max/percent without overriding persisted session choices.
+    Verify `/pair qr` exposes the short-lived iOS setup flow and that device
+    approval remains required.
 23. Verify the interactive TUI follows the same global redirect policy.
 24. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
 25. Verify a Discord message round trip.
@@ -2367,6 +2395,8 @@ The current implementation batch is complete when:
   tools, or duplicate finals;
 - `/usage full` preserves its complete summary while showing numeric
   used/max/percent context through the supported template configuration;
+- the bundled `device-pair` plugin provides `/pair qr` for iOS setup without
+  changing Discord, session, queue, LCM, or Gateway authentication behavior;
 - exact post-persist cron lifecycle events archive one matching LCM
   conversation across success, error, timeout, delivery failure, duplicate,
   overlap, and restart cases;
