@@ -36,8 +36,9 @@ commits, validation gates, deployment steps, and rollback points:
     native cron lifecycle handling, and move provider-neutral weekly storage
     maintenance into a typed `lcm maintain` command.
 11. Recover retryable model-call stalls without replaying completed tools,
-    derive fallback availability from distinct effective candidates, and
-    always surface terminal channel failures.
+    derive fallback availability from distinct effective candidates, retry one
+    safe WebSocket reconnect before SSE fallback, and always surface terminal
+    channel failures.
 12. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
     patch histories, protected behavior, validation commands, and deployment
     lessons before final handoff.
@@ -826,9 +827,14 @@ Implement model-call recovery, not whole-turn replay:
 - derive `fallbackConfigured` from the distinct effective candidate list after
   primary-equivalent entries are removed;
 - keep the existing one-retry bound for a silent same-model request;
-- after a WebSocket transport failure, retry the current model call once over
-  SSE only when no assistant text, reasoning result, or tool invocation from
-  that call has been durably adopted;
+- after a retryable WebSocket transport failure, reconnect WebSocket once when
+  no assistant text, reasoning result, or tool invocation from that call has
+  been durably adopted;
+- if that reconnect fails before semantic output, retry the current model call
+  once over SSE and keep SSE as the session fallback;
+- do not copy Codex's default five-attempt stream budget: it covers both
+  WebSocket and SSE failures and can turn a transient outage into a long
+  user-visible stall under OpenClaw's concurrent agent load;
 - retain every completed tool result exactly once and never rerun the agent
   turn or an earlier tool merely because transport failed;
 - if any tool invocation or ambiguous assistant output from the failed call was
@@ -846,7 +852,10 @@ Focused tests must cover:
 - duplicate primary fallbacks do not suppress the one same-model idle retry;
 - genuinely distinct fallback models retain their configured order;
 - a silent model call retries once without replaying prior tool results;
-- a pre-output WebSocket failure retries once through SSE;
+- a pre-output WebSocket failure reconnects WebSocket once and succeeds without
+  activating SSE fallback;
+- two consecutive pre-output WebSocket failures retry once through SSE and
+  activate the session fallback;
 - a post-tool-call or ambiguous-output WebSocket failure does not replay;
 - cancellation and run-budget expiry do not trigger recovery;
 - exhausted recovery produces one visible Discord error;
