@@ -4,7 +4,8 @@
   validated, and locally deployed; model-call transport recovery is
   implemented, focused-tested, and built with its live canary pending, while
   post-deployment evidence keeps the gated Phase 2 session-store investigation
-  open
+  open; Discord thread-bound subagent streaming and numeric `/usage full`
+  context reporting are planned but not yet implemented or configured
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -40,7 +41,10 @@ commits, validation gates, deployment steps, and rollback points:
     derive fallback availability from distinct effective candidates, retry
     three safe WebSocket reconnects before SSE fallback, and always surface
     terminal channel failures.
-12. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
+12. Make directly delivered thread-bound subagents honor the configured
+    channel streaming mode, and customize `/usage full` to report numeric
+    context usage instead of a visual meter.
+13. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
     patch histories, protected behavior, validation commands, and deployment
     lessons before final handoff.
 
@@ -84,9 +88,10 @@ Approved `openclaw.json` changes:
   retaining the process-wide `agents.defaults.subagents.maxConcurrent=50`
   ceiling so one parent cannot consume every available slot;
 - set `channels.discord.streaming.mode` and each active Discord account
-  override to `progress`, so interactive turns and directly delivered
-  thread-bound `mode="session"` subagents show temporary tool/work status
-  drafts before normal final delivery.
+  override to `progress`, so ordinary interactive Discord turns show temporary
+  tool/work status drafts before normal final delivery. Directly delivered
+  thread-bound `mode="session"` subagents currently bypass that compositor and
+  require the planned presentation fix below.
 
 This means:
 
@@ -754,6 +759,88 @@ Rollback restores matching source, build, config, databases, files, and helper
 unit states as one set. If native lifecycle verification fails, stop the new
 runtime before restoring and re-enabling only the helpers that were active in
 the recorded baseline.
+
+### Discord subagent presentation and usage footer
+
+#### Thread-bound subagents honor the configured streaming mode
+
+Current ordinary Discord turns resolve `channels.discord.streaming.mode` and
+use the Discord progress/draft compositor. A thread-bound native subagent
+started through `sessions_spawn` instead invokes the Gateway agent path with
+direct delivery. That path delivers the final response to the child thread but
+bypasses the inbound Discord handler that owns partial, block, and progress
+drafts. Setting `progress` in `openclaw.json` therefore does not currently make
+those subagent threads show progress.
+
+Add one channel-owned presentation seam to direct agent delivery. A
+thread-bound subagent must resolve and honor the same effective configured
+mode as its target channel/account:
+
+- `off`: final delivery only;
+- `partial`: the channel's existing partial-response behavior;
+- `block`: the channel's existing block-streaming behavior;
+- `progress`: temporary tool/work status followed by the normal final.
+
+Do not hardcode Discord `progress` in the subagent runtime and do not add a
+second transcript or execution path. The child run remains owned by the
+existing subagent lifecycle; the channel adapter owns only presentation.
+Each child thread gets at most one bounded editable draft, with existing
+throttling, coalescing, channel limits, and rate-limit handling. The final
+response must replace, clear, or finalize that draft exactly once. Preview
+delivery failure must degrade to final-only delivery without failing the run,
+replaying a tool, changing the child transcript, or duplicating the final.
+Cancellation, Gateway restart, and finalization races must not leave a stale
+draft. Concurrent child threads must remain isolated.
+
+Keep core delivery channel-neutral. The generic delivery contract carries the
+effective streaming mode and bounded progress events; Discord maps them
+through its existing compositor. Other channels may opt into the same
+contract without importing Discord policy into core.
+
+Likely implementation surface:
+
+- `src/agents/subagent-spawn.ts` and the direct Gateway agent-delivery
+  contract;
+- the shared channel streaming/presentation boundary;
+- `extensions/discord/src/monitor/message-handler.draft-preview.ts` or a
+  reusable Discord compositor entry point;
+- focused Gateway, subagent-delivery, and Discord adapter tests.
+
+Required tests:
+
+- thread-bound delivery honors `off`, `partial`, `block`, and `progress`;
+- channel and account override precedence matches ordinary inbound Discord;
+- two concurrent child threads never share or overwrite drafts;
+- finalization, cancellation, restart, and delivery-error races produce one
+  final and no stale preview;
+- progress events do not modify transcripts or replay tools;
+- ordinary inbound Discord streaming remains unchanged;
+- non-threaded/background subagents retain final-only behavior unless their
+  delivery surface explicitly supports streaming.
+
+#### Numeric context reporting in `/usage full`
+
+Use the supported `messages.usageTemplate` configuration surface; no OpenClaw
+source patch or new usage mode is required. Preserve every existing full-usage
+field, including provider/model, reasoning effort, speed mode, and cost, while
+replacing only the visual context meter with:
+
+```text
+Context: {context.used_tokens|num}/{context.max_tokens|num} ({context.pct_used|fixed:0}%)
+```
+
+The resulting footer should retain the normal full summary and include output
+equivalent to:
+
+```text
+openai · GPT-5.6-Sol · medium · slow | Context: 89k/372k (24%) | $0.15
+```
+
+Activate it through the supported `messages.responseUsage` scope selected for
+this installation. Preserve session-level `/usage` override precedence:
+explicit `/usage off` remains off until `/usage reset`; configuration must not
+silently overwrite a persisted session choice. Validate zero/unknown context,
+large token values, absent cost, and Discord rendering before deployment.
 
 ### Rebase-skill maintenance
 
@@ -2113,36 +2200,39 @@ phases, but each deployment must retain a clean rollback point.
 20. Verify an ordinary Discord correction during model generation redirects
     the same logical turn, and a correction during tool execution waits for a
     safe boundary.
-21. Verify Discord `progress` mode shows work status for both the interactive
-    Main session and a directly delivered thread-bound subagent, while each
-    final answer is delivered exactly once in its correct channel or thread.
-22. Verify the interactive TUI follows the same global redirect policy.
-23. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
-24. Verify a Discord message round trip.
-25. Verify `/new`.
-26. Verify manual `/compact`, stateful automatic recovery, and stateless
+21. Verify ordinary Discord turns and directly delivered thread-bound
+    subagents honor their effective configured `off`, `partial`, `block`, or
+    `progress` mode, while each final answer is delivered exactly once in its
+    correct channel or thread.
+22. Verify `/usage full` retains all full-summary fields and renders numeric
+    context as used/max/percent without overriding persisted session choices.
+23. Verify the interactive TUI follows the same global redirect policy.
+24. Verify `/steer`, queued follow-up, and `/stop` remain distinct.
+25. Verify a Discord message round trip.
+26. Verify `/new`.
+27. Verify manual `/compact`, stateful automatic recovery, and stateless
     subagent native fallback.
-27. Verify active-subagent steering, cancellation, follow-up-after-finalization,
+28. Verify active-subagent steering, cancellation, follow-up-after-finalization,
     and absence of duplicate finals or takeover errors.
-28. Verify the exec schema advertises only live session capabilities and that
+29. Verify the exec schema advertises only live session capabilities and that
     explicit unavailable hosts still fail safely.
-29. Verify model-call idle and WebSocket recovery uses one bounded retry,
+30. Verify model-call idle and WebSocket recovery uses one bounded retry,
     preserves completed tools, and surfaces an exhausted failure visibly.
-30. Verify Firecrawl is the only configured web-search provider, performs one
+31. Verify Firecrawl is the only configured web-search provider, performs one
     safe search and one safe fetch successfully, and does not expose its
     credential.
-31. Verify existing sessions, cron delivery, subagent execution, restart
+32. Verify existing sessions, cron delivery, subagent execution, restart
     recovery, and absence of runtime JSON fallback.
-32. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
+33. Observe event-loop, CPU, RSS, heap, worker queue, WAL, checkpoint, fsync,
     block-write, and LCM metrics during normal load.
-33. For Batch 5, keep the superseded completion watcher, janitor, and weekly
+34. For Batch 5, keep the superseded completion watcher, janitor, and weekly
     timer disabled; run one disposable cron lifecycle canary, copied-fixture
     stale recovery, and production `lcm maintain` dry-run. For deployments
     before Batch 5, resume only the helpers recorded active in the baseline.
-34. Verify the lifecycle canary archives only its exact conversation, produces
+35. Verify the lifecycle canary archives only its exact conversation, produces
     one acknowledged receipt, survives duplicate delivery, and leaves active
     Discord/non-cron counts unchanged.
-35. Update the global rebase skill with final commit hashes and any durable
+36. Update the global rebase skill with final commit hashes and any durable
     workflow facts learned from deployment, then verify its complete readback
     before final handoff.
 
@@ -2267,6 +2357,11 @@ The current implementation batch is complete when:
 - exhausted model-call recovery produces one visible channel error;
 - Firecrawl is the configured provider for both web search and web fetch, while
   its credential remains outside Git and diagnostic output;
+- directly delivered thread-bound subagents honor their effective configured
+  channel streaming mode without transcript changes, stale drafts, replayed
+  tools, or duplicate finals;
+- `/usage full` preserves its complete summary while showing numeric
+  used/max/percent context through the supported template configuration;
 - exact post-persist cron lifecycle events archive one matching LCM
   conversation across success, error, timeout, delivery failure, duplicate,
   overlap, and restart cases;
