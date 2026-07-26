@@ -2157,6 +2157,39 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(maybeCompactAgentHarnessSessionMock).not.toHaveBeenCalled();
   });
 
+  it("preserves successful context-engine compaction when OpenAI server compaction fails", async () => {
+    resolveModelMock.mockReturnValue({
+      model: {
+        provider: "openai",
+        api: "openai-chatgpt-responses",
+        id: "gpt-5.6-sol",
+        input: ["text"],
+      },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    });
+    compactAfterContextEngineMock.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "OpenAI server compaction response stream became idle",
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentHarnessId: "openclaw",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(contextEngineCompactMock).toHaveBeenCalledOnce();
+    expect(compactAfterContextEngineMock).toHaveBeenCalledOnce();
+    expect(maybeCompactAgentHarnessSessionMock).not.toHaveBeenCalled();
+  });
+
   it("uses concrete Codex pins on canonical OpenAI for queued compaction", async () => {
     resolveAgentHarnessPolicyMock.mockReturnValue({
       runtime: "auto",

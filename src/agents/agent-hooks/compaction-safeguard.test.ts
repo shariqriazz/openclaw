@@ -67,6 +67,7 @@ beforeEach(() => {
 afterEach(() => {
   testing.setSummarizeInStagesForTest();
   clearCompactionProviders();
+  vi.unstubAllGlobals();
 });
 
 function stubSessionManager(): ExtensionContext["sessionManager"] {
@@ -113,6 +114,8 @@ const createCompactionHandler = () => {
         compactionHandler = handler;
       }
     }),
+    getAllTools: vi.fn(() => []),
+    getActiveTools: vi.fn(() => []),
   } as unknown as ExtensionAPI;
   compactionSafeguardExtension(mockApi);
   if (!compactionHandler) {
@@ -143,10 +146,12 @@ const createCompactionContext = (params: {
   sessionManager: ExtensionContext["sessionManager"];
   getApiKeyAndHeadersMock?: ReturnType<typeof vi.fn>;
   getApiKeyMock?: ReturnType<typeof vi.fn>;
+  model?: Model;
 }) =>
   ({
-    model: undefined,
+    model: params.model,
     sessionManager: params.sessionManager,
+    getSystemPrompt: () => "system",
     modelRegistry: {
       getApiKeyAndHeaders:
         params.getApiKeyAndHeadersMock ??
@@ -2691,6 +2696,84 @@ async function expectWorkspaceSummaryEmptyForAgentsAlias(
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe("OpenAI server compaction ownership", () => {
+  it("cancels the remote request when local compaction exits early", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockRejectedValue(new Error("local summary failed"));
+    let remoteCanceled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              remoteCanceled = true;
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+
+    const tokenPayload = Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "account-test",
+        },
+      }),
+    ).toString("base64url");
+    const model: Model<"openai-chatgpt-responses"> = {
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      api: "openai-chatgpt-responses",
+      provider: "openai",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+    };
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model,
+      recentTurnsPreserve: 0,
+    });
+    const handler = createCompactionHandler();
+    const context = createCompactionContext({
+      sessionManager,
+      model,
+      getApiKeyAndHeadersMock: vi.fn(async () => ({
+        ok: true,
+        apiKey: `header.${tokenPayload}.signature`,
+      })),
+    });
+
+    const result = await handler(
+      {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "retain this", timestamp: 1 },
+          ] as AgentMessage[],
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 100_000,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          isSplitTurn: false,
+        },
+        customInstructions: "",
+        signal: new AbortController().signal,
+        branchEntries: [],
+      },
+      context,
+    );
+
+    expect(result).toEqual({ cancel: true });
+    await vi.waitFor(() => expect(remoteCanceled).toBe(true));
+  });
+});
 
 describe("readWorkspaceContextForSummary", () => {
   async function withWorkspaceSummary(

@@ -40,8 +40,37 @@ function userMessage(text: string, timestamp: number): AgentMessage {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+function compactionEvents(encryptedContent = "opaque-test"): string {
+  const events = [
+    {
+      type: "response.output_item.done",
+      item: { type: "compaction", encrypted_content: encryptedContent },
+    },
+    { type: "response.completed", response: { usage: {} } },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+function openStreamResponse(params: { chunks?: string[]; onCancel?: () => void }): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of params.chunks ?? []) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+      },
+      cancel() {
+        params.onCancel?.();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
 
 describe("OpenAI server compaction", () => {
   it("requests a compaction artifact through the existing Responses endpoint", async () => {
@@ -93,6 +122,266 @@ describe("OpenAI server compaction", () => {
       type: "compaction",
       encrypted_content: "opaque-test",
     });
+  });
+
+  it("completes on response.completed without waiting for the SSE connection to close", async () => {
+    let canceled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        openStreamResponse({
+          chunks: [compactionEvents()],
+          onCancel: () => {
+            canceled = true;
+          },
+        }),
+      ),
+    );
+
+    const details = await requestOpenAIServerCompaction({
+      model: buildModel(),
+      apiKey: buildToken(),
+      sessionId: "session-open-stream",
+      messages: [userMessage("remember this", 1)],
+      systemPrompt: "system",
+      allTools: [],
+      activeToolNames: [],
+    });
+
+    expect(details.replacementHistory.at(-1)).toMatchObject({
+      type: "compaction",
+      encrypted_content: "opaque-test",
+    });
+    expect(canceled).toBe(true);
+  });
+
+  it("does not wait for a non-cooperating stream cancellation after completion", async () => {
+    const encoder = new TextEncoder();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(compactionEvents()));
+            },
+            cancel() {
+              return new Promise<void>(() => {});
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+
+    await expect(
+      requestOpenAIServerCompaction({
+        model: buildModel(),
+        apiKey: buildToken(),
+        sessionId: "session-stuck-cancel",
+        messages: [userMessage("remember this", 1)],
+        systemPrompt: "system",
+        allTools: [],
+        activeToolNames: [],
+      }),
+    ).resolves.toMatchObject({
+      provider: "openai-responses-compaction",
+    });
+  });
+
+  it("times out and cancels a stream that never produces response bytes", async () => {
+    vi.useFakeTimers();
+    let canceled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        openStreamResponse({
+          onCancel: () => {
+            canceled = true;
+          },
+        }),
+      ),
+    );
+
+    const request = requestOpenAIServerCompaction({
+      model: buildModel(),
+      apiKey: buildToken(),
+      sessionId: "session-no-bytes",
+      messages: [userMessage("remember this", 1)],
+      systemPrompt: "system",
+      allTools: [],
+      activeToolNames: [],
+    });
+    const rejection = expect(request).rejects.toThrow(
+      "OpenAI server compaction timed out waiting for response bytes",
+    );
+    await vi.advanceTimersByTimeAsync(120_001);
+
+    await rejection;
+    expect(canceled).toBe(true);
+  });
+
+  it("times out and cancels a stream that becomes idle before completion", async () => {
+    vi.useFakeTimers();
+    let canceled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        openStreamResponse({
+          chunks: ['data: {"type":"response.created"}\n\n'],
+          onCancel: () => {
+            canceled = true;
+          },
+        }),
+      ),
+    );
+
+    const request = requestOpenAIServerCompaction({
+      model: buildModel(),
+      apiKey: buildToken(),
+      sessionId: "session-idle",
+      messages: [userMessage("remember this", 1)],
+      systemPrompt: "system",
+      allTools: [],
+      activeToolNames: [],
+    });
+    const rejection = expect(request).rejects.toThrow(
+      "OpenAI server compaction response stream became idle",
+    );
+    await vi.advanceTimersByTimeAsync(60_001);
+
+    await rejection;
+    expect(canceled).toBe(true);
+  });
+
+  it("enforces the overall deadline even when non-terminal bytes keep arriving", async () => {
+    vi.useFakeTimers();
+    let canceled = false;
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const encoder = new TextEncoder();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+
+    const request = requestOpenAIServerCompaction({
+      model: buildModel(),
+      apiKey: buildToken(),
+      sessionId: "session-overall-timeout",
+      messages: [userMessage("remember this", 1)],
+      systemPrompt: "system",
+      allTools: [],
+      activeToolNames: [],
+    });
+    const rejection = expect(request).rejects.toThrow(
+      "OpenAI server compaction exceeded its overall deadline",
+    );
+    await vi.advanceTimersByTimeAsync(50_000);
+    streamController?.enqueue(encoder.encode(": heartbeat\n\n"));
+    await vi.advanceTimersByTimeAsync(50_000);
+    streamController?.enqueue(encoder.encode(": heartbeat\n\n"));
+    await vi.advanceTimersByTimeAsync(50_000);
+    streamController?.enqueue(encoder.encode(": heartbeat\n\n"));
+    await vi.advanceTimersByTimeAsync(30_001);
+
+    await rejection;
+    expect(canceled).toBe(true);
+  });
+
+  it("cancels a pending stream when the owning operation aborts", async () => {
+    let canceled = false;
+    const controller = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        openStreamResponse({
+          onCancel: () => {
+            canceled = true;
+          },
+        }),
+      ),
+    );
+
+    const request = requestOpenAIServerCompaction({
+      model: buildModel(),
+      apiKey: buildToken(),
+      sessionId: "session-aborted",
+      messages: [userMessage("remember this", 1)],
+      systemPrompt: "system",
+      allTools: [],
+      activeToolNames: [],
+      signal: controller.signal,
+    });
+    const rejection = expect(request).rejects.toThrow("owner stopped");
+    controller.abort(new Error("owner stopped"));
+
+    await rejection;
+    expect(canceled).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "malformed JSON",
+      body: "data: {not-json}\n\n",
+      error: "OpenAI server compaction returned invalid SSE JSON",
+    },
+    {
+      name: "provider failure",
+      body: `data: ${JSON.stringify({
+        type: "response.failed",
+        response: { error: { message: "provider unavailable" } },
+      })}\n\n`,
+      error: "OpenAI server compaction failed: provider unavailable",
+    },
+    {
+      name: "duplicate compaction items",
+      body: `${compactionEvents("first").replace(
+        'data: {"type":"response.completed","response":{"usage":{}}}\n\n',
+        `data: ${JSON.stringify({
+          type: "response.output_item.done",
+          item: { type: "compaction", encrypted_content: "second" },
+        })}\n\ndata: {"type":"response.completed","response":{"usage":{}}}\n\n`,
+      )}`,
+      error: "OpenAI server compaction returned 2 compaction items",
+    },
+  ])("rejects and cancels $name streams", async ({ body, error }) => {
+    let canceled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        openStreamResponse({
+          chunks: [body],
+          onCancel: () => {
+            canceled = true;
+          },
+        }),
+      ),
+    );
+
+    await expect(
+      requestOpenAIServerCompaction({
+        model: buildModel(),
+        apiKey: buildToken(),
+        sessionId: "session-invalid",
+        messages: [userMessage("remember this", 1)],
+        systemPrompt: "system",
+        allTools: [],
+        activeToolNames: [],
+      }),
+    ).rejects.toThrow(error);
+    expect(canceled).toBe(true);
   });
 
   it("compacts from prior opaque history instead of the portable summary", async () => {

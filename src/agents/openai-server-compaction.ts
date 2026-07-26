@@ -4,6 +4,7 @@ import {
   convertResponsesMessages,
   extractOpenAICodexAccountId,
 } from "@openclaw/ai/internal/openai";
+import { createAbortError, mergeAbortSignals } from "../infra/abort-signal.js";
 import type { AgentMessage } from "./runtime/index.js";
 import type { ToolInfo } from "./sessions/index.js";
 
@@ -27,6 +28,10 @@ export type OpenAIRequestShape = {
 
 const COMPACTION_FEATURE = "remote_compaction_v2";
 const RETAINED_USER_TOKENS = 20_000;
+const FIRST_RESPONSE_BYTES_TIMEOUT_MS = 120_000;
+const RESPONSE_IDLE_TIMEOUT_MS = 60_000;
+const RESPONSE_OVERALL_TIMEOUT_MS = 180_000;
+const RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -134,69 +139,198 @@ function convertMessages(model: Model, messages: AgentMessage[]): JsonRecord[] {
   ) as unknown as JsonRecord[];
 }
 
-function parseSse(text: string): unknown[] {
-  return text
-    .replace(/\r\n/g, "\n")
-    .split("\n\n")
-    .flatMap((block) => {
-      const data = block
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n")
-        .trim();
-      if (!data || data === "[DONE]") {
-        return [];
-      }
-      try {
-        return [JSON.parse(data) as unknown];
-      } catch {
-        return [];
-      }
-    });
+function abortErrorFromSignal(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : createAbortError("OpenAI server compaction aborted");
 }
 
-function readCompactionItem(events: unknown[]): JsonRecord {
-  let completed = false;
-  const items: JsonRecord[] = [];
-  for (const event of events) {
-    if (!isRecord(event)) {
-      continue;
-    }
-    if (event.type === "error") {
+function scheduleAbort(
+  controller: AbortController,
+  timeoutMs: number,
+  message: string,
+): NodeJS.Timeout {
+  const timer = setTimeout(() => {
+    controller.abort(createAbortError(message));
+  }, timeoutMs);
+  timer.unref?.();
+  return timer;
+}
+
+async function readWithAbort(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) {
+    throw abortErrorFromSignal(signal);
+  }
+  return await new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(abortErrorFromSignal(signal));
+    };
+    const cleanup = () => {
+      signal.removeEventListener("abort", onAbort);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void reader.read().then(
+      (result) => {
+        cleanup();
+        resolve(result);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function parseSseBlock(block: string): unknown | "done" | undefined {
+  const data = block
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+  if (!data) {
+    return undefined;
+  }
+  if (data === "[DONE]") {
+    return "done";
+  }
+  try {
+    return JSON.parse(data) as unknown;
+  } catch (cause) {
+    throw new Error("OpenAI server compaction returned invalid SSE JSON", { cause });
+  }
+}
+
+function processCompactionEvent(
+  event: unknown,
+  compactionItems: JsonRecord[],
+): JsonRecord | undefined {
+  if (!isRecord(event)) {
+    return undefined;
+  }
+  if (event.type === "error") {
+    throw new Error(
+      `OpenAI server compaction failed: ${
+        typeof event.message === "string" ? event.message : "unknown error"
+      }`,
+    );
+  }
+  if (event.type === "response.failed") {
+    const response = isRecord(event.response) ? event.response : undefined;
+    const error = response && isRecord(response.error) ? response.error : undefined;
+    throw new Error(
+      `OpenAI server compaction failed: ${
+        typeof error?.message === "string" ? error.message : "response failed"
+      }`,
+    );
+  }
+  if (
+    event.type === "response.output_item.done" &&
+    isRecord(event.item) &&
+    event.item.type === "compaction"
+  ) {
+    compactionItems.push(event.item);
+    if (compactionItems.length > 1) {
       throw new Error(
-        `OpenAI server compaction failed: ${
-          typeof event.message === "string" ? event.message : "unknown error"
-        }`,
+        `OpenAI server compaction returned ${compactionItems.length} compaction items`,
       );
     }
-    if (event.type === "response.failed") {
-      const response = isRecord(event.response) ? event.response : undefined;
-      const error = response && isRecord(response.error) ? response.error : undefined;
-      throw new Error(
-        `OpenAI server compaction failed: ${
-          typeof error?.message === "string" ? error.message : "response failed"
-        }`,
+  }
+  if (event.type !== "response.completed") {
+    return undefined;
+  }
+  if (compactionItems.length !== 1) {
+    throw new Error(`OpenAI server compaction returned ${compactionItems.length} compaction items`);
+  }
+  return compactionItems[0];
+}
+
+async function readCompactionItem(params: {
+  response: Response;
+  signal: AbortSignal;
+  deadlineController: AbortController;
+}): Promise<JsonRecord> {
+  if (!params.response.body) {
+    throw new Error("OpenAI server compaction response had no body");
+  }
+  const reader = params.response.body.getReader();
+  const decoder = new TextDecoder();
+  const compactionItems: JsonRecord[] = [];
+  let buffer = "";
+  let totalBytes = 0;
+  let responseTimer = scheduleAbort(
+    params.deadlineController,
+    FIRST_RESPONSE_BYTES_TIMEOUT_MS,
+    "OpenAI server compaction timed out waiting for response bytes",
+  );
+
+  const processBufferedBlocks = (): JsonRecord | undefined => {
+    while (true) {
+      const boundary = buffer.search(/\r?\n\r?\n/u);
+      if (boundary < 0) {
+        return undefined;
+      }
+      const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/u)?.[0] ?? "\n\n";
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + separator.length);
+      const event = parseSseBlock(block);
+      if (event === "done") {
+        throw new Error("OpenAI server compaction stream ended before response.completed");
+      }
+      const item = processCompactionEvent(event, compactionItems);
+      if (item) {
+        return item;
+      }
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await readWithAbort(reader, params.signal);
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          const event = parseSseBlock(buffer);
+          if (event !== "done") {
+            const item = processCompactionEvent(event, compactionItems);
+            if (item) {
+              return item;
+            }
+          }
+        }
+        throw new Error("OpenAI server compaction stream ended before response.completed");
+      }
+      if (!value?.length) {
+        continue;
+      }
+      clearTimeout(responseTimer);
+      responseTimer = scheduleAbort(
+        params.deadlineController,
+        RESPONSE_IDLE_TIMEOUT_MS,
+        "OpenAI server compaction response stream became idle",
       );
+      totalBytes += value.length;
+      if (totalBytes > RESPONSE_MAX_BYTES) {
+        throw new Error(`OpenAI server compaction response exceeded ${RESPONSE_MAX_BYTES} bytes`);
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const item = processBufferedBlocks();
+      if (item) {
+        return item;
+      }
     }
-    if (
-      event.type === "response.output_item.done" &&
-      isRecord(event.item) &&
-      event.item.type === "compaction"
-    ) {
-      items.push(event.item);
-    }
-    if (event.type === "response.completed") {
-      completed = true;
-    }
+  } finally {
+    clearTimeout(responseTimer);
+    void reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {}
   }
-  if (!completed) {
-    throw new Error("OpenAI server compaction stream ended before response.completed");
-  }
-  if (items.length !== 1) {
-    throw new Error(`OpenAI server compaction returned ${items.length} compaction items`);
-  }
-  return items[0];
 }
 
 function textFromUserItem(item: JsonRecord): string {
@@ -231,7 +365,7 @@ function retainRecentUserItems(input: JsonRecord[]): JsonRecord[] {
     });
     remainingChars = 0;
   }
-  return retained.reverse();
+  return retained.toReversed();
 }
 
 export async function requestOpenAIServerCompaction(params: {
@@ -253,38 +387,59 @@ export async function requestOpenAIServerCompaction(params: {
   const input = params.priorState
     ? params.priorState.explicitHistory.map(cloneRecord)
     : convertMessages(params.model, params.messages);
-  const response = await fetch(resolveEndpoint(params.model), {
-    method: "POST",
-    headers: buildHeaders(params),
-    body: JSON.stringify({
-      model: params.model.id,
-      input: [...input, { type: "compaction_trigger" }],
-      instructions: params.systemPrompt,
-      tools: convertTools(params.allTools, params.activeToolNames),
-      parallel_tool_calls: true,
-      tool_choice: "auto",
-      stream: true,
-      store: false,
-      include: ["reasoning.encrypted_content"],
-      prompt_cache_key: params.sessionId,
-      ...(params.requestShape?.reasoning ? { reasoning: params.requestShape.reasoning } : {}),
-      ...(params.requestShape?.text ? { text: params.requestShape.text } : {}),
-    }),
-    signal: params.signal,
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(
-      `OpenAI server compaction failed (${response.status}): ${body || response.statusText}`,
-    );
+  const deadlineController = new AbortController();
+  const overallTimer = scheduleAbort(
+    deadlineController,
+    RESPONSE_OVERALL_TIMEOUT_MS,
+    "OpenAI server compaction exceeded its overall deadline",
+  );
+  const mergedSignal = mergeAbortSignals([params.signal, deadlineController.signal]);
+  const signal = mergedSignal.signal ?? deadlineController.signal;
+  try {
+    if (signal.aborted) {
+      throw abortErrorFromSignal(signal);
+    }
+    const response = await fetch(resolveEndpoint(params.model), {
+      method: "POST",
+      headers: buildHeaders(params),
+      body: JSON.stringify({
+        model: params.model.id,
+        input: [...input, { type: "compaction_trigger" }],
+        instructions: params.systemPrompt,
+        tools: convertTools(params.allTools, params.activeToolNames),
+        parallel_tool_calls: true,
+        tool_choice: "auto",
+        stream: true,
+        store: false,
+        include: ["reasoning.encrypted_content"],
+        prompt_cache_key: params.sessionId,
+        ...(params.requestShape?.reasoning ? { reasoning: params.requestShape.reasoning } : {}),
+        ...(params.requestShape?.text ? { text: params.requestShape.text } : {}),
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        `OpenAI server compaction failed (${response.status}): ${body || response.statusText}`,
+      );
+    }
+    const compactionItem = await readCompactionItem({
+      response,
+      signal,
+      deadlineController,
+    });
+    return {
+      version: 1,
+      provider: "openai-responses-compaction",
+      modelKey: modelKey(params.model),
+      replacementHistory: [...retainRecentUserItems(input), cloneRecord(compactionItem)],
+    };
+  } finally {
+    deadlineController.abort(createAbortError("OpenAI server compaction request finished"));
+    clearTimeout(overallTimer);
+    mergedSignal.dispose();
   }
-  const compactionItem = readCompactionItem(parseSse(await response.text()));
-  return {
-    version: 1,
-    provider: "openai-responses-compaction",
-    modelKey: modelKey(params.model),
-    replacementHistory: [...retainRecentUserItems(input), cloneRecord(compactionItem)],
-  };
 }
 
 export function readOpenAIRequestShape(payload: unknown): OpenAIRequestShape | undefined {

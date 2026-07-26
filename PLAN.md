@@ -397,6 +397,20 @@ Required design:
 - Use the normal OpenAI Responses endpoint with a trailing
   `compaction_trigger`; do not patch installed dependencies or add another
   provider identity.
+- Parse the SSE response incrementally and complete as soon as the single
+  compaction item and `response.completed` terminal event are observed. Do not
+  wait for the server to close an otherwise complete stream.
+- Give remote compaction independent first-byte, stream-idle, and overall
+  deadlines that are shorter than stuck-session recovery. Merge those
+  deadlines with caller cancellation and cancel the response reader plus fetch
+  on every terminal path.
+- Treat remote compaction as an optional provider enhancement. A timeout,
+  malformed or partial stream, provider error, disconnect, caller abort, or
+  shutdown must retain any successful LCM/local compaction and release the
+  session lane promptly.
+- Do not allow a late remote result to write a transcript or compaction entry
+  after its attempt lost ownership. No remote request may remain detached when
+  local compaction fails or the owning operation exits.
 - Keep native Pi/OpenClaw transport and existing WebSocket/SSE selection
   unchanged. Server compaction is a compaction concern, not a new harness.
 - Run the existing readable local summary in parallel. It remains the fallback
@@ -433,6 +447,41 @@ Focused proof must cover endpoint/body/header construction, repeated opaque
 compaction, resume with pending input, exact-model isolation, newest-boundary
 selection, stale-reasoning suppression, native compaction after stateful LCM
 manual and overflow paths, and unchanged local fallback behavior.
+
+Incident replay:
+
+- At `2026-07-26T01:11:24.597Z`, Main's provider turn ended with a WebSocket
+  error. LCM then completed leaf compaction at
+  `2026-07-26T01:12:04.548Z`, but the secondary OpenAI server-compaction
+  request remained pending while the session lane held one queued redirect.
+- At `2026-07-26T01:17:54.212Z`, stuck-session recovery aborted the run after
+  approximately 365 seconds. The secondary compaction then failed with
+  `Reply_operation_aborted_by_user`; the already successful LCM compaction
+  remained usable, but the queued user message had been unnecessarily blocked.
+- The direct cause is the remote request awaiting `response.text()` and then
+  being awaited before local compaction can return, with no remote-specific
+  deadline. The configured 1,800-second general compaction timeout is longer
+  than the five-minute no-progress recovery boundary.
+
+Additional regression gates:
+
+- A stream that emits a valid compaction item and `response.completed` but
+  keeps the connection open completes immediately and cancels its reader.
+- No response bytes, periodic non-terminal bytes, a partial event, malformed
+  JSON, duplicate compaction items, `response.failed`, disconnect, and a stream
+  ending before `response.completed` each fall back within their bounded
+  deadline.
+- Successful LCM compaction followed by remote timeout returns the LCM result,
+  releases the lane, and consumes queued redirect intent exactly once.
+- Successful native local summary followed by remote failure commits the local
+  summary without waiting for stuck-session recovery.
+- Caller cancellation and Gateway shutdown abort both fetch and reader without
+  a detached request, late transcript write, duplicate compaction entry, or
+  unhandled rejection.
+- Repeated compaction after fallback never reuses a missing, partial, stale, or
+  wrong-model remote artifact.
+- Completed tool results remain exactly once; remote timeout never replays a
+  model turn, tool call, or external side effect.
 
 ### Batch 5: Native LCM cron lifecycle and maintenance
 

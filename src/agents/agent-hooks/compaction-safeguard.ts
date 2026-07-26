@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { extractSections } from "../../auto-reply/reply/post-compaction-context.js";
-import { isAbortError } from "../../infra/abort-signal.js";
+import { isAbortError, mergeAbortSignals } from "../../infra/abort-signal.js";
 import { openRootFile } from "../../infra/boundary-file-read.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -1090,7 +1090,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           model,
         })
       : undefined;
-    const remoteCompaction = supportsOpenAIServerCompaction(model)
+    const remoteCompactionController = supportsOpenAIServerCompaction(model)
+      ? new AbortController()
+      : undefined;
+    const remoteCompactionSignal = mergeAbortSignals([signal, remoteCompactionController?.signal]);
+    const remoteCompaction = remoteCompactionController
       ? requestOpenAIServerCompaction({
           model,
           apiKey,
@@ -1102,7 +1106,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           allTools: api.getAllTools(),
           activeToolNames: api.getActiveTools(),
           requestShape: getOpenAIRequestShape(ctx.sessionManager),
-          signal,
+          signal: remoteCompactionSignal.signal,
         }).then(
           (details) => ({ details }),
           (error: unknown) => ({ error }),
@@ -1382,6 +1386,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         `Compaction safeguard could not summarize the session: ${message}`,
       );
       return { cancel: true };
+    } finally {
+      remoteCompactionController?.abort(
+        new Error("OpenAI server compaction owner finished before the remote request"),
+      );
+      remoteCompactionSignal.dispose();
     }
   });
 }
