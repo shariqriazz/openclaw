@@ -1,9 +1,10 @@
 # Gateway Reliability and Persistence Performance Plan
 
 - Status: correctness Batches 1-5 and performance Phases 0-1.5 implemented,
-  validated, and locally deployed; model-call transport recovery is pending,
-  and post-deployment evidence keeps the gated Phase 2 session-store
-  investigation open
+  validated, and locally deployed; model-call transport recovery is
+  implemented, focused-tested, and built with its live canary pending, while
+  post-deployment evidence keeps the gated Phase 2 session-store investigation
+  open
 - Target branch: `shariq`
 - Baseline: OpenClaw `2026.7.1` at `969bd2c17ba`
 - Investigation date: 2026-07-24
@@ -36,9 +37,9 @@ commits, validation gates, deployment steps, and rollback points:
     native cron lifecycle handling, and move provider-neutral weekly storage
     maintenance into a typed `lcm maintain` command.
 11. Recover retryable model-call stalls without replaying completed tools,
-    derive fallback availability from distinct effective candidates, retry one
-    safe WebSocket reconnect before SSE fallback, and always surface terminal
-    channel failures.
+    derive fallback availability from distinct effective candidates, retry
+    three safe WebSocket reconnects before SSE fallback, and always surface
+    terminal channel failures.
 12. Refresh the global `openclaw-rebase` skill with the final OpenClaw and LCM
     patch histories, protected behavior, validation commands, and deployment
     lessons before final handoff.
@@ -826,17 +827,17 @@ tools, correctly reporting `replaySafe=no`. Historical logs contain the same
 WebSocket failure before this maintenance series, so the transport failure was
 not introduced by the current fork patches.
 
-Implement model-call recovery, not whole-turn replay:
+Implemented model-call recovery, not whole-turn replay:
 
 - derive `fallbackConfigured` from the distinct effective candidate list after
   primary-equivalent entries are removed;
 - keep the existing one-retry bound for a silent same-model request;
-- after a retryable WebSocket transport failure, reconnect WebSocket once when
-  no assistant text, reasoning result, or tool invocation from that call has
-  been durably adopted;
-- if that reconnect fails before semantic output, retry the current model call
+- after a retryable WebSocket transport failure, reconnect WebSocket up to
+  three times when no assistant text, reasoning result, or tool invocation
+  from that call has been durably adopted;
+- if all reconnects fail before semantic output, retry the current model call
   once over SSE and keep SSE as the session fallback;
-- do not copy Codex's default five-attempt stream budget: it covers both
+- do not copy Codex's default five-retry stream budget: it covers both
   WebSocket and SSE failures and can turn a transient outage into a long
   user-visible stall under OpenClaw's concurrent agent load;
 - retain every completed tool result exactly once and never rerun the agent
@@ -856,9 +857,9 @@ Focused tests must cover:
 - duplicate primary fallbacks do not suppress the one same-model idle retry;
 - genuinely distinct fallback models retain their configured order;
 - a silent model call retries once without replaying prior tool results;
-- a pre-output WebSocket failure reconnects WebSocket once and succeeds without
+- a pre-output WebSocket failure reconnects WebSocket and succeeds without
   activating SSE fallback;
-- two consecutive pre-output WebSocket failures retry once through SSE and
+- four consecutive pre-output WebSocket failures retry once through SSE and
   activate the session fallback;
 - a post-tool-call or ambiguous-output WebSocket failure does not replay;
 - cancellation and run-budget expiry do not trigger recovery;
