@@ -304,10 +304,18 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     result.ok && result.compacted
       ? tokensAfterCompaction
       : runtime.resolveFreshSessionTotalTokens(targetSessionEntry);
-  const contextSummary = runtime.formatContextUsageShort(
+  const lastMeasuredContextSummary = runtime.formatContextUsageShort(
     typeof totalTokens === "number" && totalTokens > 0 ? totalTokens : null,
     contextTokenBudget ?? null,
   );
+  const engineManagedTokens =
+    result.compacted || result.result?.tokensAfter == null ? undefined : result.result.tokensAfter;
+  const contextSummary =
+    typeof engineManagedTokens === "number" &&
+    engineManagedTokens > 0 &&
+    engineManagedTokens !== totalTokens
+      ? `Engine-managed context ${runtime.formatTokenCount(engineManagedTokens)} • Last measured ${lastMeasuredContextSummary.replace(/^Context\b/, "context")}`
+      : lastMeasuredContextSummary;
   const reason = formatCompactionReason(result.reason);
   const line = reason
     ? `${compactLabel}: ${reason} • ${contextSummary}`

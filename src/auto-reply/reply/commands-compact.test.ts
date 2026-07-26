@@ -261,6 +261,10 @@ describe("handleCompactCommand", () => {
       ok: false,
       compacted: false,
       reason: "already under target",
+      result: {
+        tokensBefore: 39_286,
+        tokensAfter: 39_286,
+      },
     });
 
     const result = await handleCompactCommand(
@@ -278,7 +282,7 @@ describe("handleCompactCommand", () => {
     );
 
     expect(result?.reply?.text).toBe(
-      "⚙️ Compaction skipped: context is already under the compaction target • Context 12.1k",
+      "⚙️ Compaction skipped: context is already under the compaction target • Engine-managed context 39286 • Last measured context 12.1k",
     );
     expect(result?.reply?.isStatusNotice).toBe(true);
     expect(vi.mocked(incrementCompactionCount)).not.toHaveBeenCalled();
