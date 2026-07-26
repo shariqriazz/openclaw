@@ -2029,15 +2029,16 @@ async function runEmbeddedAgentInternal(
               extraSystemPrompt: params.extraSystemPrompt,
               sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
               ownerNumbers: params.ownerNumbers,
+              contextEngineSummary: compactResult.result?.summary,
               contextTokenBudget: ctxInfo.tokens,
               tokenBudget: ctxInfo.tokens,
               force: true,
               trigger: "budget",
               abortSignal: params.abortSignal,
             });
-          } catch (error) {
+          } catch (compactionError) {
             log.warn(
-              `OpenAI server compaction threw after ${reason} for ${provider}/${modelId}: ${String(error)}`,
+              `OpenAI server compaction threw after ${reason} for ${provider}/${modelId}: ${String(compactionError)}`,
             );
             return;
           }

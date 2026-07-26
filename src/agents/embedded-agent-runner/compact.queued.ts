@@ -569,6 +569,7 @@ export async function compactEmbeddedAgentSession(
               sessionId: postCompactionSessionId,
               sessionFile: postCompactionSessionFile,
               contextEngine,
+              contextEngineSummary: result.result?.summary,
               contextTokenBudget,
               contextEngineRuntimeContext,
               force: true,

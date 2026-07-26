@@ -1772,6 +1772,9 @@ Exit criteria:
   ChatGPT transport.
 - Manual `/compact`, timeout recovery, and overflow recovery invoke direct
   provider compaction after stateful LCM compaction.
+- Native provider follow-up reuses the summary already produced by stateful
+  LCM; it does not issue a duplicate local summarization request. OpenAI
+  failure still finalizes with the successful LCM summary.
 - Stateless LCM delegation that already produced an artifact is not compacted
   twice.
 - Native non-OpenAI compaction, Codex harness compaction, and third-party

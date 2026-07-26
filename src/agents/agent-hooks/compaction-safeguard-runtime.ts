@@ -11,6 +11,11 @@ type CompactionSafeguardRuntimeValue = {
   identifierInstructions?: string;
   customInstructions?: string;
   /**
+   * Summary already produced by an owning context engine. Native follow-up
+   * compaction reuses it instead of making a duplicate local summary request.
+   */
+  contextEngineSummary?: string;
+  /**
    * Model to use for compaction summarization.
    * Passed through runtime because `ctx.model` is undefined in the compact.ts workflow
    * (extensionRunner.initialize() is never called in that path).

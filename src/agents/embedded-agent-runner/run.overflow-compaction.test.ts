@@ -2200,6 +2200,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
     mockedCompactDirect.mockResolvedValueOnce(
       makeCompactionSuccess({
+        summary: "engine-summary",
         tokensBefore: 272_537,
         tokensAfter: 130_000,
       }),
@@ -2294,6 +2295,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
     mockedCompactDirect.mockResolvedValueOnce(
       makeCompactionSuccess({
+        summary: "engine-summary",
         tokensBefore: 272_537,
         tokensAfter: 130_000,
       }),
@@ -2311,6 +2313,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       provider: "openai",
       model: "gpt-5.6-sol",
       agentHarnessId: "openclaw",
+      contextEngineSummary: "engine-summary",
       contextTokenBudget: 200_000,
       force: true,
       trigger: "budget",

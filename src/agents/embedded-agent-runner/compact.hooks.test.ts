@@ -2151,6 +2151,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         provider: "openai",
         model: "gpt-5.6-sol",
         agentHarnessId: "openclaw",
+        contextEngineSummary: "engine-summary",
         force: true,
       }),
     );

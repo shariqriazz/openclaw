@@ -39,7 +39,6 @@ import {
   findOpenAIServerCompactionState,
   requestOpenAIServerCompaction,
   supportsOpenAIServerCompaction,
-  type OpenAIServerCompactionDetails,
 } from "../openai-server-compaction.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
@@ -1112,8 +1111,42 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           (error: unknown) => ({ error }),
         )
       : undefined;
+    const resolveRemoteCompactionDetails = async () => {
+      const outcome = await remoteCompaction;
+      if (outcome && "details" in outcome) {
+        return outcome.details;
+      }
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error ? signal.reason : new Error("Compaction aborted");
+      }
+      if (outcome) {
+        log.warn(
+          `OpenAI server compaction failed; retaining local compaction: ${formatErrorMessage(
+            outcome.error,
+          )}`,
+        );
+      }
+      return undefined;
+    };
 
     try {
+      const contextEngineSummary = runtime?.contextEngineSummary?.trim();
+      if (contextEngineSummary) {
+        const remoteCompactionDetails = await resolveRemoteCompactionDetails();
+        return {
+          compaction: {
+            summary: contextEngineSummary,
+            firstKeptEntryId: preparation.firstKeptEntryId,
+            tokensBefore: preparation.tokensBefore,
+            details: {
+              readFiles,
+              modifiedFiles,
+              ...(remoteCompactionDetails ? { remoteCompaction: remoteCompactionDetails } : {}),
+            },
+          },
+        };
+      }
+
       const modelContextWindow = resolveContextWindowTokens(model);
       const contextWindowTokens = runtime?.contextWindowTokens ?? modelContextWindow;
       let messagesToSummarize = baseMessagesToSummarize;
@@ -1352,17 +1385,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       });
       const bodyToCap = lastHistorySummary || summary;
       summary = capCompactionSummaryPreservingSuffix(bodyToCap, suffix);
-      const remoteCompactionOutcome = await remoteCompaction;
-      let remoteCompactionDetails: OpenAIServerCompactionDetails | undefined;
-      if (remoteCompactionOutcome && "details" in remoteCompactionOutcome) {
-        remoteCompactionDetails = remoteCompactionOutcome.details;
-      } else if (remoteCompactionOutcome && !signal?.aborted) {
-        log.warn(
-          `OpenAI server compaction failed; retaining local compaction: ${formatErrorMessage(
-            remoteCompactionOutcome.error,
-          )}`,
-        );
-      }
+      const remoteCompactionDetails = await resolveRemoteCompactionDetails();
 
       return {
         compaction: {

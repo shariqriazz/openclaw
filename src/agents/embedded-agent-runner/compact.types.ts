@@ -77,6 +77,8 @@ export type CompactEmbeddedAgentSessionParams = {
   execOverrides?: Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
   bashElevated?: ExecElevatedDefaults;
   customInstructions?: string;
+  /** Summary already produced by an owning context engine for native follow-up compaction. */
+  contextEngineSummary?: string;
   tokenBudget?: number;
   /** Host recovery convergence boundary forwarded through native compaction delegates. */
   targetPromptTokens?: number;
