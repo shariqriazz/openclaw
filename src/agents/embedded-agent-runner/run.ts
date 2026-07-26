@@ -1012,6 +1012,8 @@ async function runEmbeddedAgentInternal(
       const normalizedSessionKey = params.sessionKey?.trim();
       const fallbackConfigured = hasEmbeddedRunConfiguredModelFallbacks({
         cfg: params.config,
+        provider,
+        model: modelId,
         agentId: params.agentId,
         sessionKey: normalizedSessionKey,
         modelFallbacksOverride: params.modelFallbacksOverride,

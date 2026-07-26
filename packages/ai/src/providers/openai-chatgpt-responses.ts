@@ -309,6 +309,7 @@ export const streamOpenAICodexResponses: StreamFunction<
       const transport = options?.transport || "auto";
       const websocketDisabledForSession =
         transport === "auto" && isWebSocketSseFallbackActive(options?.sessionId);
+      let streamStarted = false;
       if (websocketDisabledForSession) {
         recordWebSocketSseFallback(options?.sessionId);
       }
@@ -328,6 +329,7 @@ export const streamOpenAICodexResponses: StreamFunction<
               model,
               () => {
                 websocketStarted = true;
+                streamStarted = true;
               },
               requestOptions,
               firstEventAbort.abort,
@@ -354,11 +356,13 @@ export const streamOpenAICodexResponses: StreamFunction<
             if (aborted || (isCodexNonTransportError(error) && !connectionLimitBeforeStart)) {
               throw error;
             }
+            const semanticOutputStarted = output.content.length > 0;
             appendAssistantMessageDiagnostic(
               output,
               createAssistantMessageDiagnostic("provider_transport_failure", error, {
                 configuredTransport: transport,
-                fallbackTransport: transport === "auto" && !websocketStarted ? "sse" : undefined,
+                fallbackTransport:
+                  transport === "auto" && !semanticOutputStarted ? "sse" : undefined,
                 eventsEmitted: websocketStarted,
                 phase: websocketStarted
                   ? "after_message_stream_start"
@@ -369,9 +373,12 @@ export const streamOpenAICodexResponses: StreamFunction<
             recordWebSocketFailure(options?.sessionId, error, {
               activateSseFallback: transport === "auto",
             });
-            if (websocketStarted || transport !== "auto") {
+            if (semanticOutputStarted || transport !== "auto") {
               throw error;
             }
+            // A metadata-only WebSocket event may set responseId without producing
+            // assistant intent. Clear it before the same request is retried over SSE.
+            delete output.responseId;
             recordWebSocketSseFallback(options?.sessionId);
             break;
           }
@@ -487,7 +494,10 @@ export const streamOpenAICodexResponses: StreamFunction<
         throw new Error("No response body");
       }
 
-      stream.push({ type: "start", partial: output });
+      if (!streamStarted) {
+        streamStarted = true;
+        stream.push({ type: "start", partial: output });
+      }
       await processStream(response, output, stream, model, options, firstEventAbort.abort);
 
       if (activeSignal?.aborted) {

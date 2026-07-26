@@ -9,6 +9,8 @@ describe("hasEmbeddedRunConfiguredModelFallbacks", () => {
     expect(
       hasEmbeddedRunConfiguredModelFallbacks({
         cfg: {},
+        provider: "openai",
+        model: "gpt-5.6-sol",
         modelFallbacksOverride: ["openai/gpt-5.4"],
       }),
     ).toBe(true);
@@ -29,6 +31,8 @@ describe("hasEmbeddedRunConfiguredModelFallbacks", () => {
     expect(
       hasEmbeddedRunConfiguredModelFallbacks({
         cfg,
+        provider: "openai",
+        model: "gpt-5.6-sol",
         modelFallbacksOverride: [],
       }),
     ).toBe(false);
@@ -44,6 +48,46 @@ describe("hasEmbeddedRunConfiguredModelFallbacks", () => {
         },
       },
     };
-    expect(hasEmbeddedRunConfiguredModelFallbacks({ cfg, agentId: "main" })).toBe(true);
+    expect(
+      hasEmbeddedRunConfiguredModelFallbacks({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentId: "main",
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores duplicate fallbacks that resolve to the active model", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.6-sol",
+            fallbacks: ["openai/gpt-5.6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-sol"],
+          },
+        },
+      },
+    };
+
+    expect(
+      hasEmbeddedRunConfiguredModelFallbacks({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentId: "main",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps a distinct effective fallback after duplicate primary entries", () => {
+    expect(
+      hasEmbeddedRunConfiguredModelFallbacks({
+        cfg: {},
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        modelFallbacksOverride: ["openai/gpt-5.6-sol", "openai/gpt-5.4", "openai/gpt-5.4"],
+      }),
+    ).toBe(true);
   });
 });

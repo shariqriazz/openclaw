@@ -2,7 +2,8 @@
  * Reads configured embedded-run model fallback availability.
  */
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { hasConfiguredModelFallbacks } from "../../agent-scope.js";
+import { resolveRunModelFallbacksOverride } from "../../agent-scope.js";
+import { resolveModelCandidateChain } from "../../model-fallback.js";
 
 /**
  * Resolves whether this embedded run has any model fallback path available.
@@ -11,17 +12,25 @@ import { hasConfiguredModelFallbacks } from "../../agent-scope.js";
  */
 export function hasEmbeddedRunConfiguredModelFallbacks(params: {
   cfg: OpenClawConfig | undefined;
+  provider: string;
+  model: string;
   agentId?: string | null;
   sessionKey?: string | null;
   modelFallbacksOverride?: string[];
 }): boolean {
-  // An explicit empty override disables fallbacks even when config has defaults.
-  if (params.modelFallbacksOverride !== undefined) {
-    return params.modelFallbacksOverride.length > 0;
-  }
-  return hasConfiguredModelFallbacks({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-  });
+  const fallbacksOverride =
+    params.modelFallbacksOverride ??
+    resolveRunModelFallbacksOverride({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+    });
+  return (
+    resolveModelCandidateChain({
+      cfg: params.cfg,
+      provider: params.provider,
+      model: params.model,
+      fallbacksOverride,
+    }).length > 1
+  );
 }

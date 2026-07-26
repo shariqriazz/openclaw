@@ -289,6 +289,101 @@ describe("streamOpenAICodexResponses transport", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("falls back to SSE after metadata-only websocket progress", async () => {
+    class MetadataThenFailingWebSocket extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
+      }
+
+      send(): void {
+        queueMicrotask(() => {
+          this.dispatchEvent(
+            Object.assign(new Event("message"), {
+              data: JSON.stringify({
+                type: "response.created",
+                response: { id: "resp_ws_metadata", status: "in_progress", output: [] },
+              }),
+            }),
+          );
+          this.dispatchEvent(Object.assign(new Event("error"), { message: "socket dropped" }));
+        });
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    const fetchMock = vi.fn(async () => completedSseResponse("resp_sse_recovery"));
+    vi.stubGlobal("WebSocket", MetadataThenFailingWebSocket);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      sessionId: "session-metadata-recovery",
+      transport: "auto",
+    }).result();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.stopReason).toBe("stop");
+    expect(result.responseId).toBe("resp_sse_recovery");
+  });
+
+  it("does not replay over SSE after websocket assistant output starts", async () => {
+    class OutputThenFailingWebSocket extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
+      }
+
+      send(): void {
+        queueMicrotask(() => {
+          this.dispatchEvent(
+            Object.assign(new Event("message"), {
+              data: JSON.stringify({
+                type: "response.output_item.added",
+                output_index: 0,
+                item: {
+                  id: "msg_ws",
+                  type: "message",
+                  role: "assistant",
+                  status: "in_progress",
+                  content: [],
+                },
+              }),
+            }),
+          );
+          this.dispatchEvent(Object.assign(new Event("error"), { message: "socket dropped" }));
+        });
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    const fetchMock = vi.fn(async () => completedSseResponse("resp_should_not_run"));
+    vi.stubGlobal("WebSocket", OutputThenFailingWebSocket);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      sessionId: "session-output-no-replay",
+      transport: "auto",
+    }).result();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain("socket dropped");
+  });
+
   it("rotates cached websockets before the backend connection age limit", async () => {
     vi.useFakeTimers();
     const startedAt = new Date("2026-07-03T00:00:00Z");
