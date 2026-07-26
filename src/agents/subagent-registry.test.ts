@@ -4982,6 +4982,82 @@ describe("subagent registry seam flow", () => {
     expect(replacement?.delivery?.suspendedReason).toBeUndefined();
   });
 
+  it("retries only deliveries suspended before Gateway dispatch context was available", async () => {
+    const endedAt = Date.parse("2026-03-24T11:59:30Z");
+    mocks.loadSessionStore.mockReturnValue({
+      "agent:main:subagent:run-gateway-context": {
+        sessionId: "sess-gateway-context",
+        updatedAt: endedAt,
+      },
+      "agent:main:subagent:run-provider-timeout": {
+        sessionId: "sess-provider-timeout",
+        updatedAt: endedAt,
+      },
+    });
+    const addSuspendedRun = (runId: string, lastError: string) => {
+      mod.addSubagentRunForTests({
+        runId,
+        childSessionKey: `agent:main:subagent:${runId}`,
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "resume startup-blocked delivery",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+        createdAt: endedAt - 30_000,
+        startedAt: endedAt - 20_000,
+        endedAt,
+        endedReason: "subagent-complete",
+        outcome: { status: "ok" },
+        completion: { required: true, resultText: "child completed successfully" },
+        delivery: {
+          status: "suspended",
+          createdAt: endedAt + 1_000,
+          lastAttemptAt: endedAt + 2_000,
+          attemptCount: 3,
+          lastError,
+          payload: {
+            requesterSessionKey: "agent:main:main",
+            requesterDisplayKey: "main",
+            childSessionKey: `agent:main:subagent:${runId}`,
+            childRunId: runId,
+            task: "resume startup-blocked delivery",
+            endedAt,
+            outcome: { status: "ok" },
+            expectsCompletionMessage: true,
+            frozenResultText: "child completed successfully",
+          },
+          suspendedAt: endedAt + 3_000,
+          suspendedReason: "retry-limit",
+        },
+      });
+    };
+    addSuspendedRun(
+      "run-gateway-context",
+      "direct-primary: In-process gateway dispatch requires a gateway request scope (method: agent). No scope set and no fallback context available.",
+    );
+    addSuspendedRun("run-provider-timeout", "gateway request timeout for agent");
+
+    expect(mod.retryGatewayContextBlockedSubagentDeliveries()).toBe(1);
+
+    await waitForFast(() => {
+      expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledWith(
+      expect.objectContaining({ childRunId: "run-gateway-context" }),
+    );
+    expect(
+      mod
+        .listSubagentRunsForRequester("agent:main:main")
+        .find((entry) => entry.runId === "run-provider-timeout"),
+    ).toMatchObject({
+      delivery: {
+        status: "suspended",
+        lastError: "gateway request timeout for agent",
+      },
+    });
+    expect(mocks.persistSubagentRunsToDisk).toHaveBeenCalled();
+  });
+
   it("finalizes expired delete-mode parents when descendant cleanup retriggers deferred announce handling", async () => {
     mocks.loadSessionStore.mockReturnValue({
       "agent:main:subagent:parent": {

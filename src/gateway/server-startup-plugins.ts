@@ -1,7 +1,10 @@
 // Gateway plugin startup bootstrap.
 // Runs startup maintenance, loads plugin runtime, and prepares advertised methods.
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { initSubagentRegistry } from "../agents/subagent-registry.js";
+import {
+  initSubagentRegistry,
+  retryGatewayContextBlockedSubagentDeliveries,
+} from "../agents/subagent-registry.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   collectRegisteredEmbeddingProviderIds,
@@ -41,6 +44,12 @@ export function resolveGatewayStartupMaintenanceConfig(params: {
         channels: params.startupRuntimeConfig.channels,
       }
     : params.cfgAtStart;
+}
+
+/** Restores pending subagent work only after in-process Gateway dispatch is available. */
+export function startGatewaySubagentRegistry(): void {
+  initSubagentRegistry();
+  retryGatewayContextBlockedSubagentDeliveries();
 }
 
 /** Builds plugin startup state and gateway method lists before the server binds. */
@@ -84,8 +93,6 @@ export async function prepareGatewayPluginBootstrap(params: {
     }
     await Promise.all(startupTasks);
   }
-
-  initSubagentRegistry();
 
   // Activation uses the pre-runtime source so auto-enable policy cannot be skewed by
   // defaults injected while loading runtime config; runtime-only plugin config still merges in.

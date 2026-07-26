@@ -14,6 +14,7 @@ const applyPluginAutoEnable = vi.hoisted(() =>
   })),
 );
 const initSubagentRegistry = vi.hoisted(() => vi.fn());
+const retryGatewayContextBlockedSubagentDeliveries = vi.hoisted(() => vi.fn());
 const loadGatewayStartupPlugins = vi.hoisted(() =>
   vi.fn((_params: unknown) => ({
     pluginRegistry: { diagnostics: [], gatewayHandlers: {}, plugins: [] },
@@ -112,6 +113,8 @@ vi.mock("../agents/agent-scope.js", () => ({
 
 vi.mock("../agents/subagent-registry.js", () => ({
   initSubagentRegistry: () => initSubagentRegistry(),
+  retryGatewayContextBlockedSubagentDeliveries: () =>
+    retryGatewayContextBlockedSubagentDeliveries(),
 }));
 
 vi.mock("../channels/plugins/lifecycle-startup.js", () => ({
@@ -252,7 +255,21 @@ describe("prepareGatewayPluginBootstrap startup plugins", () => {
     resolveOpenClawPackageRootSync.mockClear().mockReturnValue("/package");
     runChannelPluginStartupMaintenance.mockClear();
     runStartupSessionMigration.mockClear();
+    retryGatewayContextBlockedSubagentDeliveries.mockClear();
   });
+
+  it("defers subagent registry recovery until the gateway context is ready", async () => {
+    await prepareBootstrapWithRuntimeConfig({});
+
+    expect(initSubagentRegistry).not.toHaveBeenCalled();
+
+    const { startGatewaySubagentRegistry } = await import("./server-startup-plugins.js");
+    startGatewaySubagentRegistry();
+
+    expect(initSubagentRegistry).toHaveBeenCalledTimes(1);
+    expect(retryGatewayContextBlockedSubagentDeliveries).toHaveBeenCalledTimes(1);
+  });
+
   it("derives startup activation from source config instead of runtime plugin defaults", async () => {
     const sourceConfig = {
       channels: {

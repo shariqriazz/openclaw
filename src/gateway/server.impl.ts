@@ -1528,6 +1528,8 @@ export async function startGatewayServer(
             fallbackGatewayContextCleanup();
           }
         : () => {};
+    const { startGatewaySubagentRegistry } = await loadStartupPluginsModule();
+    startGatewaySubagentRegistry();
 
     if (!minimalTestGateway) {
       if (runtimePluginsLoaded && deferredConfiguredChannelPluginIds.length > 0) {

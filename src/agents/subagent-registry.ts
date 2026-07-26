@@ -114,6 +114,7 @@ export {
   resolveSubagentSessionStatus,
 } from "./subagent-registry-helpers.js";
 const log = createSubsystemLogger("agents/subagent-registry");
+const GATEWAY_CONTEXT_UNAVAILABLE_ERROR_FRAGMENT = "No scope set and no fallback context available";
 
 type SubagentAnnounceModule = Pick<
   typeof import("./subagent-announce.js"),
@@ -860,6 +861,41 @@ function restoreSubagentRunsOnce() {
       `failed to restore subagent runs from disk: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/**
+ * Retries deliveries suspended only because Gateway recovery ran before its
+ * in-process dispatch context existed. Other suspended deliveries stay manual.
+ */
+export function retryGatewayContextBlockedSubagentDeliveries(): number {
+  const runIds: string[] = [];
+  for (const [runId, entry] of subagentRuns.entries()) {
+    const delivery = entry.delivery;
+    if (
+      !isDeliverySuspended(entry) ||
+      !delivery?.payload ||
+      !getDeliveryLastError(entry)?.includes(GATEWAY_CONTEXT_UNAVAILABLE_ERROR_FRAGMENT)
+    ) {
+      continue;
+    }
+    delivery.status = "pending";
+    delivery.lastAttemptAt = undefined;
+    delivery.attemptCount = 0;
+    delivery.lastError = undefined;
+    delivery.suspendedAt = undefined;
+    delivery.suspendedReason = undefined;
+    entry.cleanupHandled = false;
+    resumedRuns.delete(runId);
+    runIds.push(runId);
+  }
+  if (runIds.length === 0) {
+    return 0;
+  }
+  persistSubagentRuns();
+  for (const runId of runIds) {
+    resumeSubagentRun(runId);
+  }
+  return runIds.length;
 }
 
 function resolveSubagentWaitTimeoutMs(cfg: OpenClawConfig, runTimeoutSeconds?: number) {
